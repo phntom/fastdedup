@@ -47,6 +47,9 @@ func walkRandom(dir string, fn func(path string, size int64)) error {
 		path := filepath.Join(dir, entry.Name())
 
 		if entry.IsDir() {
+			if entry.Name() == ".snapshots" {
+				continue
+			}
 			_ = walkRandom(path, fn)
 			continue
 		}

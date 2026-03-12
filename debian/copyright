@@ -1,0 +1,8 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: fastdedup
+Upstream-Contact: PHANTOm <phantom@kix.co.il>
+Source: https://github.com/phntom/fastdedup
+
+Files: *
+Copyright: 2026 PHANTOm <phantom@kix.co.il>
+License: MIT

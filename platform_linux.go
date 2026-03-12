@@ -152,8 +152,8 @@ func restoreMetadata(path string, orig os.FileInfo) error {
 	}
 
 	// Timestamps.
-	atime := time.Unix(stat.Atim.Sec, stat.Atim.Nsec)
-	mtime := time.Unix(stat.Mtim.Sec, stat.Mtim.Nsec)
+	atime := time.Unix(int64(stat.Atim.Sec), int64(stat.Atim.Nsec))
+	mtime := time.Unix(int64(stat.Mtim.Sec), int64(stat.Mtim.Nsec))
 	if err := os.Chtimes(path, atime, mtime); err != nil {
 		return fmt.Errorf("chtimes: %w", err)
 	}

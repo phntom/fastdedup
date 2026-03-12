@@ -1,0 +1,19 @@
+#!/usr/bin/make -f
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	GOFLAGS=-mod=vendor go build -ldflags="-s -w" -o fastdedup .
+
+override_dh_auto_install:
+	install -D -m 0755 fastdedup debian/fastdedup/usr/bin/fastdedup
+
+override_dh_auto_test:
+	# skip tests for PPA build
+
+override_dh_dwz:
+	# skip dwz for Go binaries
+
+override_dh_strip:
+	# skip strip for Go binaries

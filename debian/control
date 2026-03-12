@@ -1,0 +1,18 @@
+Source: fastdedup
+Section: utils
+Priority: optional
+Maintainer: PHANTOm <phantom@kix.co.il>
+Build-Depends: debhelper-compat (= 13), golang-go (>= 2:1.22~)
+Standards-Version: 4.6.2
+Homepage: https://github.com/phntom/fastdedup
+Vcs-Git: https://github.com/phntom/fastdedup.git
+Vcs-Browser: https://github.com/phntom/fastdedup
+
+Package: fastdedup
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Fast file deduplication for btrfs using reflinks
+ fastdedup performs two-pass deduplication on btrfs filesystems.
+ It surveys file sizes to identify the most impactful duplicates,
+ then deduplicates them using btrfs reflinks for instant,
+ copy-on-write deduplication with no extra disk space.

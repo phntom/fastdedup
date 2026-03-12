@@ -4,7 +4,7 @@
 	dh $@
 
 override_dh_auto_build:
-	HOME=$(CURDIR) GOMODCACHE=$(CURDIR)/.gomodcache GOCACHE=$(CURDIR)/.gocache GOFLAGS=-mod=vendor go build -ldflags="-s -w" -o fastdedup .
+	HOME=$(CURDIR) GOMODCACHE=$(CURDIR)/.gomodcache GOCACHE=$(CURDIR)/.gocache GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -ldflags="-s -w" -o fastdedup .
 
 override_dh_auto_install:
 	install -D -m 0755 fastdedup debian/fastdedup/usr/bin/fastdedup

@@ -43,120 +43,108 @@ type fileRef struct {
 	extents []Extent
 }
 
-// Dedup performs pass 2: walks the directory tree, finds files matching
-// the target sizes, and deduplicates identical files using reflinks.
-// For each target size, files are grouped by content. Within each group
-// the shortest path is kept as the reference and other files are relinked
-// to share the same physical extents.
-func Dedup(root string, targets []SizeEntry, dryRun bool) (*DedupStats, error) {
-	targetSet := make(map[int64]struct{}, len(targets))
-	for _, t := range targets {
-		targetSet[t.Size] = struct{}{}
-	}
-
-	// groups maps file size to known content groups (one ref per unique content).
-	groups := make(map[int64][]*fileRef)
-	stats := &DedupStats{}
-	var processed int64
-
+// CollectFiles walks the tree once and returns file paths grouped by target size.
+// The optional onMatch callback is called for each file matching a target size.
+func CollectFiles(root string, targetSet map[int64]struct{}, onMatch func()) (map[int64][]string, error) {
+	result := make(map[int64][]string)
 	err := walkRandom(root, func(path string, size int64) {
-		if _, ok := targetSet[size]; !ok {
-			return
+		if _, ok := targetSet[size]; ok {
+			result[size] = append(result[size], path)
+			if onMatch != nil {
+				onMatch()
+			}
 		}
-
-		processed++
-		if processed%100_000 == 0 {
-			slog.Debug("pass 2 progress",
-				"files_processed", processed,
-				"deduped", stats.FilesDeduped,
-				"saved_bytes", stats.BytesSaved,
-			)
-		}
-
-		processFile(path, size, groups, stats, dryRun)
 	})
-
-	slog.Info("pass 2 scan complete", "files_checked", processed)
-	return stats, err
+	return result, err
 }
 
-// processFile compares a file against known references for its size class.
-// If it matches an existing reference (same inode, same extents, or same content),
-// the appropriate action is taken (skip, update ref, or dedup).
-// If no match is found, a new content group is created.
-func processFile(path string, size int64, groups map[int64][]*fileRef, stats *DedupStats, dryRun bool) {
-	refs := groups[size]
+// ProcessSizeGroup deduplicates all files of a single size, returning stats.
+// The optional onProgress callback is called with the 1-based index of each file processed.
+func ProcessSizeGroup(paths []string, size int64, dryRun bool, rawSizes bool, onProgress func(current int)) *DedupStats {
+	stats := &DedupStats{}
+	var refs []*fileRef
 
-	// First file of this size — establish as reference.
-	if len(refs) == 0 {
+	for i, path := range paths {
+		if onProgress != nil {
+			onProgress(i + 1)
+		}
+
 		extents, err := getExtents(path)
 		if err != nil {
 			slog.Debug("cannot get extents, skipping", "path", path, "error", err)
-			return
-		}
-		groups[size] = []*fileRef{{path: path, extents: extents}}
-		return
-	}
-
-	extents, err := getExtents(path)
-	if err != nil {
-		slog.Debug("cannot get extents, skipping", "path", path, "error", err)
-		return
-	}
-
-	for _, ref := range refs {
-		// Same inode (hard link) — already sharing storage.
-		if same, _ := sameInode(ref.path, path); same {
-			if len(path) < len(ref.path) {
-				ref.path = path
-				ref.extents = extents
-			}
-			stats.AlreadyDeduped++
-			return
-		}
-
-		// Same extents (existing reflink) — already sharing storage.
-		if SameExtents(ref.extents, extents) {
-			if len(path) < len(ref.path) {
-				ref.path = path
-				ref.extents = extents
-			}
-			stats.AlreadyDeduped++
-			return
-		}
-
-		// Different extents — compare file content byte-by-byte.
-		equal, err := filesEqual(ref.path, path)
-		if err != nil {
-			slog.Debug("content comparison failed", "a", ref.path, "b", path, "error", err)
-			continue
-		}
-		if !equal {
 			continue
 		}
 
-		// Identical content, different extents — deduplicate!
-		if dryRun {
-			fmt.Printf("[dry-run] dedup: %s -> %s (%d bytes)\n", path, ref.path, size)
+		// First file with valid extents — establish as reference.
+		if len(refs) == 0 {
+			refs = append(refs, &fileRef{path: path, extents: extents})
+			continue
+		}
+
+		matched := false
+		for _, ref := range refs {
+			// Same inode (hard link) — already sharing storage.
+			if same, _ := sameInode(ref.path, path); same {
+				if len(path) < len(ref.path) {
+					ref.path = path
+					ref.extents = extents
+				}
+				stats.AlreadyDeduped++
+				matched = true
+				break
+			}
+
+			// Same extents (existing reflink) — already sharing storage.
+			if SameExtents(ref.extents, extents) {
+				if len(path) < len(ref.path) {
+					ref.path = path
+					ref.extents = extents
+				}
+				stats.AlreadyDeduped++
+				matched = true
+				break
+			}
+
+			// Different extents — compare file content byte-by-byte.
+			equal, err := filesEqual(ref.path, path)
+			if err != nil {
+				slog.Debug("content comparison failed", "a", ref.path, "b", path, "error", err)
+				continue
+			}
+			if !equal {
+				continue
+			}
+
+			// Identical content, different extents — deduplicate!
+			if dryRun {
+				fmt.Printf("[dry-run] dedup: %s -> %s (%s)\n", path, ref.path, formatSize(size, rawSizes))
+				stats.BytesSaved += size
+				stats.FilesDeduped++
+				matched = true
+				break
+			}
+
+			if err := dedupFile(ref.path, path); err != nil {
+				slog.Warn("dedup failed", "src", ref.path, "dst", path, "error", err)
+				stats.Errors++
+				matched = true
+				break
+			}
+
+			slog.Debug("deduped", "file", path, "ref", ref.path, "size", size)
 			stats.BytesSaved += size
 			stats.FilesDeduped++
-			return
+			matched = true
+			break
 		}
 
-		if err := dedupFile(ref.path, path); err != nil {
-			slog.Warn("dedup failed", "src", ref.path, "dst", path, "error", err)
-			stats.Errors++
-			return
+		if !matched {
+			// New content group for this size.
+			refs = append(refs, &fileRef{path: path, extents: extents})
 		}
-
-		slog.Info("deduped", "file", path, "ref", ref.path, "size", size)
-		stats.BytesSaved += size
-		stats.FilesDeduped++
-		return
 	}
 
-	// No matching reference — new content group for this size.
-	groups[size] = append(refs, &fileRef{path: path, extents: extents})
+	return stats
 }
 
 // filesEqual reports whether two files have identical content.

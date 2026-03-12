@@ -11,13 +11,14 @@ import (
 // regular file's size in the SizeMap. Symlinks are ignored. Directory
 // entry order is randomized so repeated runs explore different parts of
 // the tree before the bounded map fills up.
-func WalkSizes(root string, sm *SizeMap) (int64, error) {
+// The optional onFile callback is called for every regular file encountered.
+func WalkSizes(root string, sm *SizeMap, onFile func()) (int64, error) {
 	var count int64
 	err := walkRandom(root, func(_ string, size int64) {
 		sm.Add(size)
 		count++
-		if count%1_000_000 == 0 {
-			slog.Debug("pass 1 progress", "files", count, "unique_sizes", sm.Len())
+		if onFile != nil {
+			onFile()
 		}
 	})
 	return count, err

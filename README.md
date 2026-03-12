@@ -43,9 +43,9 @@ Reflinks are instant — the filesystem shares the underlying data blocks betwee
 
 ### Ubuntu (PPA)
 ```bash
-sudo add-apt-repository ppa:phntm/ppa
+sudo add-apt-repository -y ppa:phntm/ppa
 sudo apt update
-sudo apt install fastdedup
+sudo apt install -y fastdedup
 ```
 
 Supports Ubuntu 22.04 (jammy), 24.04 (noble), 24.10 (oracular), and 25.04 (plucky).
@@ -102,15 +102,23 @@ go build -ldflags="-s -w" -o fastdedup .
 
 ## Releasing
 
-Requires [fpm](https://github.com/jordansissel/fpm) (`gem install --user-install fpm`).
+Requires [fpm](https://github.com/jordansissel/fpm), `devscripts`, and `dput`:
+```bash
+gem install --user-install fpm
+sudo apt install devscripts dput
+```
 
 ```bash
 ./release.sh <version>
 ```
 
-This builds binaries for all architectures, creates `.deb`, `.rpm`, `.apk`, and `.sh` packages, and tags the commit.
+This will:
+1. Build binaries for all architectures
+2. Create `.deb`, `.rpm`, `.apk`, and `.sh` packages
+3. Tag the commit as `v<version>`
+4. Build and upload source packages to the [Ubuntu PPA](https://launchpad.net/~phntm/+archive/ubuntu/ppa)
 
-To publish on GitHub:
+To publish on GitHub after running the release script:
 ```bash
 git push origin v<version>
 gh release create v<version> release/<version>/* --title 'v<version>' --notes-file release/<version>/description.md

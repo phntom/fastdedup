@@ -6,6 +6,10 @@ RELEASE_DIR="release/${VERSION}"
 NAME="fastdedup"
 DESC="Fast file deduplication for btrfs using reflinks"
 ARCHES=(amd64 arm64 386 arm riscv64 ppc64le s390x mips64le)
+MAINTAINER="PHANTOm <phantom@kix.co.il>"
+GPG_KEY="B2BE8C2EBFB7AAC6572E933C779CD5498B743A1B"
+PPA_SERIES=(noble questing)
+PPA_TARGET="phntm-ppa"
 
 # Ensure fpm is available
 if ! command -v fpm &>/dev/null; then
@@ -76,6 +80,60 @@ else
   git tag -a "v${VERSION}" -m "Release v${VERSION}"
 fi
 
+# ── Ubuntu PPA ──────────────────────────────────────────────────────
+echo ""
+echo "==> Building and uploading Ubuntu PPA source packages..."
+
+# Ensure dput and debuild are available
+for cmd in dput debuild; do
+  if ! command -v "$cmd" &>/dev/null; then
+    echo "ERROR: $cmd not found. Install with: sudo apt install devscripts dput"
+    exit 1
+  fi
+done
+
+# Vendor dependencies (needed for offline Launchpad builds)
+go mod vendor
+
+# Remove any stale built binary so it doesn't end up in the source tarball
+rm -f "${NAME}"
+
+PPA_REV=1
+for series in "${PPA_SERIES[@]}"; do
+  PPA_VERSION="${VERSION}~ppa${PPA_REV}~${series}"
+
+  # Update debian/changelog for this series
+  cat > debian/changelog <<CHLOG
+${NAME} (${PPA_VERSION}) ${series}; urgency=low
+
+  * Release v${VERSION}
+
+ -- ${MAINTAINER}  $(date -R)
+CHLOG
+
+  # Clean previous artifacts for this version
+  rm -f ../${NAME}_${PPA_VERSION}*
+
+  printf "  %-12s build..." "$series"
+  debuild -S -k"${GPG_KEY}" 2>/dev/null
+  echo " upload..."
+  dput --force "${PPA_TARGET}" "../${NAME}_${PPA_VERSION}_source.changes" 2>/dev/null
+  echo "  ${series} done"
+done
+
+# Restore changelog to first series
+FIRST_SERIES="${PPA_SERIES[0]}"
+cat > debian/changelog <<CHLOG
+${NAME} (${VERSION}~ppa${PPA_REV}~${FIRST_SERIES}) ${FIRST_SERIES}; urgency=low
+
+  * Release v${VERSION}
+
+ -- ${MAINTAINER}  $(date -R)
+CHLOG
+
+# Clean up vendor dir (it's gitignored)
+rm -rf vendor/
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "==> Release ${VERSION} ready in ${RELEASE_DIR}/"
@@ -84,3 +142,6 @@ echo ""
 echo "To publish on GitHub:"
 echo "  git push origin v${VERSION}"
 echo "  gh release create v${VERSION} ${RELEASE_DIR}/* --title 'v${VERSION}' --notes-file ${RELEASE_DIR}/description.md"
+echo ""
+echo "PPA uploads submitted for: ${PPA_SERIES[*]}"
+echo "  Monitor builds at: https://launchpad.net/~phntm/+archive/ubuntu/ppa"

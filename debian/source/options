@@ -2,3 +2,4 @@ tar-ignore=release
 tar-ignore=.git
 tar-ignore=.claude
 tar-ignore=.idea
+tar-ignore=testdedup

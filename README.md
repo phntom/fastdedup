@@ -57,7 +57,7 @@ sudo apt update
 sudo apt install -y fastdedup
 ```
 
-Supports Ubuntu 22.04 (jammy), 24.04 (noble), 24.10 (oracular), and 25.04 (plucky).
+Supports Ubuntu 22.04 (jammy), 24.04 (noble), and 25.10 (questing).
 
 ### Debian/Ubuntu (manual)
 

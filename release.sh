@@ -8,8 +8,13 @@ DESC="Fast file deduplication using reflinks (btrfs, XFS, ZFS)"
 ARCHES=(amd64 arm64 386 arm riscv64 ppc64le s390x mips64le)
 MAINTAINER="PHANTOm <phantom@kix.co.il>"
 GPG_KEY="B2BE8C2EBFB7AAC6572E933C779CD5498B743A1B"
-PPA_SERIES=(noble questing)
+PPA_SERIES=(jammy noble questing)
 PPA_TARGET="phntm-ppa"
+
+# Series that need a bundled Go toolchain (system Go is too old)
+BUNDLED_GO_SERIES=(jammy)
+BUNDLED_GO_VERSION="1.22.12"
+BUNDLED_GO_URL="https://go.dev/dl/go${BUNDLED_GO_VERSION}.linux-amd64.tar.gz"
 
 # Ensure fpm is available
 if ! command -v fpm &>/dev/null; then
@@ -97,9 +102,97 @@ go mod vendor
 # Remove any stale built binary so it doesn't end up in the source tarball
 rm -f "${NAME}"
 
+# Save original debian files (will be modified per-series)
+cp debian/control debian/control.orig
+cp debian/rules debian/rules.orig
+
+# Download Go toolchain for bundled-Go series (if any)
+needs_bundled=false
+for series in "${PPA_SERIES[@]}"; do
+  for bs in "${BUNDLED_GO_SERIES[@]}"; do
+    [[ "$series" == "$bs" ]] && needs_bundled=true
+  done
+done
+
+if $needs_bundled; then
+  GO_TARBALL="go${BUNDLED_GO_VERSION}.linux-amd64.tar.gz"
+  if [[ ! -f "${RELEASE_DIR}/${GO_TARBALL}" ]]; then
+    echo "==> Downloading Go ${BUNDLED_GO_VERSION} toolchain..."
+    curl -fsSL -o "${RELEASE_DIR}/${GO_TARBALL}" "${BUNDLED_GO_URL}"
+  fi
+fi
+
 PPA_REV=1
 for series in "${PPA_SERIES[@]}"; do
   PPA_VERSION="${VERSION}~ppa${PPA_REV}~${series}"
+
+  # Check if this series needs bundled Go
+  use_bundled=false
+  for bs in "${BUNDLED_GO_SERIES[@]}"; do
+    [[ "$series" == "$bs" ]] && use_bundled=true
+  done
+
+  if $use_bundled; then
+    # Bundle Go toolchain into source tree
+    echo "  ${series}: bundling Go ${BUNDLED_GO_VERSION} toolchain..."
+    rm -rf _go
+    mkdir -p _go
+    tar -xzf "${RELEASE_DIR}/${GO_TARBALL}" -C _go --strip-components=1
+
+    # Use modified debian/control without golang-go dependency
+    cat > debian/control <<CTRL
+Source: ${NAME}
+Section: utils
+Priority: optional
+Maintainer: ${MAINTAINER}
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.6.2
+Homepage: https://github.com/phntom/fastdedup
+Vcs-Git: https://github.com/phntom/fastdedup.git
+Vcs-Browser: https://github.com/phntom/fastdedup
+
+Package: ${NAME}
+Architecture: amd64
+Depends: \${shlibs:Depends}, \${misc:Depends}
+Description: ${DESC}
+ fastdedup performs two-pass deduplication on filesystems that support
+ reflinks (btrfs, XFS, ZFS). It surveys file sizes to identify the
+ most impactful duplicates, then deduplicates them using reflinks for
+ instant, copy-on-write deduplication with no extra disk space.
+CTRL
+
+    # Use modified debian/rules that uses bundled Go
+    cat > debian/rules <<'RULES'
+#!/usr/bin/make -f
+
+export GOROOT := $(CURDIR)/_go
+export PATH := $(GOROOT)/bin:$(PATH)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	HOME=$(CURDIR) GOMODCACHE=$(CURDIR)/.gomodcache GOCACHE=$(CURDIR)/.gocache GOTOOLCHAIN=local GOFLAGS=-mod=vendor $(GOROOT)/bin/go build -ldflags="-s -w" -o fastdedup .
+
+override_dh_auto_install:
+	install -D -m 0755 fastdedup debian/fastdedup/usr/bin/fastdedup
+
+override_dh_auto_test:
+	# skip tests for PPA build
+
+override_dh_dwz:
+	# skip dwz for Go binaries
+
+override_dh_strip:
+	# skip strip for Go binaries
+RULES
+    chmod +x debian/rules
+  else
+    # Restore original debian files for series with system Go
+    cp debian/control.orig debian/control
+    cp debian/rules.orig debian/rules
+    rm -rf _go
+  fi
 
   # Update debian/changelog for this series
   cat > debian/changelog <<CHLOG
@@ -120,7 +213,13 @@ CHLOG
   echo "  ${series} done"
 done
 
-# Restore changelog to first series
+# Restore original debian files and clean up
+cp debian/control.orig debian/control
+cp debian/rules.orig debian/rules
+rm -f debian/control.orig debian/rules.orig
+rm -rf _go
+
+# Restore changelog to first non-bundled series (or first series)
 FIRST_SERIES="${PPA_SERIES[0]}"
 cat > debian/changelog <<CHLOG
 ${NAME} (${VERSION}~ppa${PPA_REV}~${FIRST_SERIES}) ${FIRST_SERIES}; urgency=low

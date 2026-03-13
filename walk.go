@@ -12,13 +12,13 @@ import (
 // entry order is randomized so repeated runs explore different parts of
 // the tree before the bounded map fills up.
 // The optional onFile callback is called for every regular file encountered.
-func WalkSizes(root string, sm *SizeMap, includeSnapshots bool, onFile func()) (int64, error) {
+func WalkSizes(root string, sm *SizeMap, includeSnapshots bool, minSize int64, onFile func(path string, size int64)) (int64, error) {
 	var count int64
-	err := walkRandom(root, includeSnapshots, func(_ string, size int64) {
+	err := walkRandom(root, includeSnapshots, minSize, func(path string, size int64) {
 		sm.Add(size)
 		count++
 		if onFile != nil {
-			onFile()
+			onFile(path, size)
 		}
 	})
 	return count, err
@@ -28,7 +28,7 @@ func WalkSizes(root string, sm *SizeMap, includeSnapshots bool, onFile func()) (
 // each regular file found. Directory entries are shuffled to randomize
 // traversal order. Symlinks, special files, and empty files are skipped.
 // Errors reading individual directories are logged and skipped.
-func walkRandom(dir string, includeSnapshots bool, fn func(path string, size int64)) error {
+func walkRandom(dir string, includeSnapshots bool, minSize int64, fn func(path string, size int64)) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		slog.Debug("skipping unreadable directory", "path", dir, "error", err)
@@ -51,7 +51,7 @@ func walkRandom(dir string, includeSnapshots bool, fn func(path string, size int
 			if !includeSnapshots && entry.Name() == ".snapshots" {
 				continue
 			}
-			_ = walkRandom(path, includeSnapshots, fn)
+			_ = walkRandom(path, includeSnapshots, minSize, fn)
 			continue
 		}
 
@@ -65,7 +65,7 @@ func walkRandom(dir string, includeSnapshots bool, fn func(path string, size int
 			continue
 		}
 
-		if info.Size() == 0 {
+		if info.Size() == 0 || info.Size() < minSize {
 			continue
 		}
 

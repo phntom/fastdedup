@@ -83,12 +83,15 @@ fastdedup [flags] [directory]
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--min-size` | 524288 | Minimum file size to process in bytes (512 KiB) |
 | `--max-sizes` | 1,000,000 | Maximum unique file sizes to track in pass 1 |
 | `--top` | 10,000 | Number of top file sizes by potential savings to dedup in pass 2 |
 | `--dry-run` | false | Report what would be deduped without making changes |
 | `-v` | false | Show file paths of deduped files and detailed diagnostics |
 | `-q` | false | Quiet mode — only print final summary (for cronjobs) |
 | `--batch` | false | Collect all target files in one pass (faster, uses more memory) |
+| `--low-memory` | false | Scan separately for each file size (lowest memory, slower) |
+| `--no-cache` | false | Disable the dedup cache — always process all sizes |
 | `--snapshots` | false | Include `.snapshots` directories (skipped by default) |
 | `--raw-sizes` | false | Show raw byte counts instead of human-readable |
 | `-C` | | Change to directory before running |

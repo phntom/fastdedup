@@ -6,13 +6,16 @@ import (
 	"strings"
 )
 
-var isTTY = func() bool {
-	fi, err := os.Stderr.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
-}()
+var (
+	isTTY = func() bool {
+		fi, err := os.Stderr.Stat()
+		if err != nil {
+			return false
+		}
+		return fi.Mode()&os.ModeCharDevice != 0
+	}()
+	quietMode bool
+)
 
 const barWidth = 30
 
@@ -63,7 +66,7 @@ func formatCount(n int64) string {
 
 // printProgressBar renders a progress bar on stderr, overwriting the current line.
 func printProgressBar(prefix string, current, total int, suffix string) {
-	if !isTTY || total <= 0 {
+	if quietMode || !isTTY || total <= 0 {
 		return
 	}
 	pct := current * 100 / total
@@ -77,7 +80,7 @@ func printProgressBar(prefix string, current, total int, suffix string) {
 
 // printCounter renders a counter on stderr, overwriting the current line.
 func printCounter(prefix string, count int64) {
-	if !isTTY {
+	if quietMode || !isTTY {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "\r\033[K%s %s", prefix, formatCount(count))
@@ -85,6 +88,9 @@ func printCounter(prefix string, count int64) {
 
 // finishLine completes the current line and moves to the next.
 func finishLine(text string) {
+	if quietMode {
+		return
+	}
 	if isTTY {
 		fmt.Fprintf(os.Stderr, "\r\033[K%s\n", text)
 	} else {

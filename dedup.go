@@ -45,9 +45,9 @@ type fileRef struct {
 
 // CollectFiles walks the tree once and returns file paths grouped by target size.
 // The optional onMatch callback is called for each file matching a target size.
-func CollectFiles(root string, targetSet map[int64]struct{}, onMatch func()) (map[int64][]string, error) {
+func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bool, onMatch func()) (map[int64][]string, error) {
 	result := make(map[int64][]string)
-	err := walkRandom(root, func(path string, size int64) {
+	err := walkRandom(root, includeSnapshots, func(path string, size int64) {
 		if _, ok := targetSet[size]; ok {
 			result[size] = append(result[size], path)
 			if onMatch != nil {
@@ -60,7 +60,7 @@ func CollectFiles(root string, targetSet map[int64]struct{}, onMatch func()) (ma
 
 // ProcessSizeGroup deduplicates all files of a single size, returning stats.
 // The optional onProgress callback is called with the 1-based index of each file processed.
-func ProcessSizeGroup(paths []string, size int64, dryRun bool, rawSizes bool, onProgress func(current int)) *DedupStats {
+func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, rawSizes bool, onProgress func(current int)) *DedupStats {
 	stats := &DedupStats{}
 	var refs []*fileRef
 
@@ -125,12 +125,15 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, rawSizes bool, on
 			}
 
 			if err := dedupFile(ref.path, path); err != nil {
-				slog.Warn("dedup failed", "src", ref.path, "dst", path, "error", err)
+				slog.Debug("dedup failed", "src", ref.path, "dst", path, "error", err)
 				stats.Errors++
 				matched = true
 				break
 			}
 
+			if verbose {
+				fmt.Fprintf(os.Stderr, "    %s -> %s\n", path, ref.path)
+			}
 			slog.Debug("deduped", "file", path, "ref", ref.path, "size", size)
 			stats.BytesSaved += size
 			stats.FilesDeduped++

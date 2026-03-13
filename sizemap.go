@@ -8,9 +8,9 @@ type SizeEntry struct {
 	Count int64
 }
 
-// Impact returns the total byte impact: size * count.
-func (e SizeEntry) Impact() int64 {
-	return e.Size * e.Count
+// Savings returns the potential space savings: size * (count - 1).
+func (e SizeEntry) Savings() int64 {
+	return e.Size * (e.Count - 1)
 }
 
 // SizeMap is a bounded map from file size to occurrence count.
@@ -42,7 +42,7 @@ func (sm *SizeMap) Len() int {
 	return len(sm.m)
 }
 
-// TopN returns the top n entries with count >= 2, ranked by impact descending.
+// TopN returns the top n entries with count >= 2, ranked by potential savings descending.
 func (sm *SizeMap) TopN(n int) []SizeEntry {
 	entries := make([]SizeEntry, 0, len(sm.m))
 	for size, count := range sm.m {
@@ -52,13 +52,13 @@ func (sm *SizeMap) TopN(n int) []SizeEntry {
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].Impact() > entries[j].Impact()
+		return entries[i].Savings() > entries[j].Savings()
 	})
 
 	return entries[:min(n, len(entries))]
 }
 
-// evict removes the bottom 10% of entries by impact.
+// evict removes the bottom 10% of entries by potential savings.
 func (sm *SizeMap) evict() {
 	evictCount := sm.maxSize / 10
 	if evictCount < 1 {
@@ -66,16 +66,16 @@ func (sm *SizeMap) evict() {
 	}
 
 	type entry struct {
-		size   int64
-		impact int64
+		size    int64
+		savings int64
 	}
 	all := make([]entry, 0, len(sm.m))
 	for size, count := range sm.m {
-		all = append(all, entry{size, size * count})
+		all = append(all, entry{size, size * (count - 1)})
 	}
 
 	sort.Slice(all, func(i, j int) bool {
-		return all[i].impact < all[j].impact
+		return all[i].savings < all[j].savings
 	})
 
 	for i := range min(evictCount, len(all)) {

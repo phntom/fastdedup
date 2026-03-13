@@ -9,6 +9,8 @@ import (
 	"strings"
 )
 
+var version = "dev"
+
 func main() {
 	var (
 		maxSizes     = flag.Int("max-sizes", 1_000_000, "maximum unique file sizes to track in pass 1")
@@ -23,16 +25,22 @@ func main() {
 		hardlink     = flag.Bool("hardlink", false, "use hard links instead of reflinks (works on any filesystem, but linked files share all changes)")
 		rawSizes     = flag.Bool("raw-sizes", false, "show raw byte counts instead of human-readable")
 		snapshots    = flag.Bool("snapshots", false, "include .snapshots directories (skipped by default)")
+		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
 
 	//goland:noinspection GoUnhandledErrorResult
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags] [directory]\n\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Deduplicate files on btrfs using reflinks.\n\n")
+		fmt.Fprintf(os.Stderr, "Deduplicate files using reflinks (btrfs, XFS, ZFS).\n\n")
 		fmt.Fprintf(os.Stderr, "Flags:\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("fastdedup %s\n", version)
+		return
+	}
 
 	root := "."
 	if flag.NArg() > 0 {
@@ -145,6 +153,7 @@ func main() {
 
 	// === Pass 2: Deduplicate ===
 	totalStats := &DedupStats{}
+	errorSizes := make(map[int64]bool) // track which size groups had errors
 
 	// processGroup deduplicates one size group and accumulates stats.
 	processGroup := func(idx, total int, size int64, paths []string) {
@@ -183,6 +192,9 @@ func main() {
 		totalStats.FilesDeduped += stats.FilesDeduped
 		totalStats.AlreadyDeduped += stats.AlreadyDeduped
 		totalStats.Errors += stats.Errors
+		if stats.Errors > 0 {
+			errorSizes[size] = true
+		}
 	}
 
 	if *batch {
@@ -364,10 +376,12 @@ func main() {
 		}
 	}
 
-	// Update dedup cache (skip on dry-run and when errors occurred).
-	if cacheFile != "" && !*dryRun && totalStats.Errors == 0 {
+	// Update dedup cache (skip on dry-run; exclude size groups that had errors).
+	if cacheFile != "" && !*dryRun {
 		for _, t := range originalTargets {
-			cached[t.Size] = filenameHashes[t.Size]
+			if !errorSizes[t.Size] {
+				cached[t.Size] = filenameHashes[t.Size]
+			}
 		}
 		if err := saveCache(cacheFile, cached); err != nil {
 			slog.Debug("failed to save cache", "error", err)

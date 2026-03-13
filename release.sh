@@ -33,7 +33,7 @@ mkdir -p "$RELEASE_DIR"
 echo "==> Building binaries for ${#ARCHES[@]} architectures..."
 for arch in "${ARCHES[@]}"; do
   printf "  %-10s" "linux/$arch"
-  GOOS=linux GOARCH="$arch" go build -ldflags="-s -w" \
+  GOOS=linux GOARCH="$arch" go build -ldflags="-s -w -X main.version=${VERSION}" \
     -o "${RELEASE_DIR}/${NAME}-linux-${arch}" .
   echo "ok"
 done
@@ -167,12 +167,13 @@ CTRL
 
 export GOROOT := $(CURDIR)/_go
 export PATH := $(GOROOT)/bin:$(PATH)
+DEB_VERSION := $(shell dpkg-parsechangelog -S Version)
 
 %:
 	dh $@
 
 override_dh_auto_build:
-	HOME=$(CURDIR) GOMODCACHE=$(CURDIR)/.gomodcache GOCACHE=$(CURDIR)/.gocache GOTOOLCHAIN=local GOFLAGS=-mod=vendor $(GOROOT)/bin/go build -ldflags="-s -w" -o fastdedup .
+	HOME=$(CURDIR) GOMODCACHE=$(CURDIR)/.gomodcache GOCACHE=$(CURDIR)/.gocache GOTOOLCHAIN=local GOFLAGS=-mod=vendor $(GOROOT)/bin/go build -ldflags="-s -w -X main.version=$(DEB_VERSION)" -o fastdedup .
 
 override_dh_auto_install:
 	install -D -m 0755 fastdedup debian/fastdedup/usr/bin/fastdedup

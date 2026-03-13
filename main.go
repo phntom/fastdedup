@@ -47,8 +47,10 @@ func main() {
 		root = flag.Arg(0)
 	}
 
-	// Resolve to absolute path for display and cache keying.
-	if absRoot, err := filepath.Abs(root); err == nil {
+	// Resolve to canonical path (symlinks, .., trailing slashes) for display and cache keying.
+	if canonical, err := filepath.EvalSymlinks(root); err == nil {
+		root = canonical
+	} else if absRoot, err := filepath.Abs(root); err == nil {
 		root = absRoot
 	}
 

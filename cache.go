@@ -14,9 +14,13 @@ func cachePath(root string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	absRoot, err := filepath.Abs(root)
+	absRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", err
+		// Fall back to Abs if symlink resolution fails (e.g. broken symlink).
+		absRoot, err = filepath.Abs(root)
+		if err != nil {
+			return "", err
+		}
 	}
 	h := fnv.New64a()
 	h.Write([]byte(absRoot))

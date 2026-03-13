@@ -100,6 +100,20 @@ func main() {
 	if cacheFile != "" {
 		filenameHashes = make(map[int64]uint64)
 	}
+
+	// Estimate total files for progress bar: try metadata cache first, then statfs for mount points.
+	var mFile string
+	var estimatedFiles int64
+	if cacheFile != "" {
+		mFile = metaPath(cacheFile)
+		if meta := loadMeta(mFile); meta != nil {
+			estimatedFiles = meta.FileCount
+		}
+	}
+	if estimatedFiles == 0 && isMountPoint(root) {
+		estimatedFiles = fsFileEstimate(root)
+	}
+
 	var scanCount int64
 	scanStart := time.Now()
 	fileCount, err := WalkSizes(root, sm, *snapshots, *minSize, func(path string, size int64) {
@@ -109,7 +123,12 @@ func main() {
 		scanCount++
 		if scanCount%10_000 == 0 {
 			rate := int64(float64(scanCount) / time.Since(scanStart).Seconds())
-			printStatus(fmt.Sprintf("  Scanned: %s (%s/s)", formatCount(scanCount), formatCount(rate)))
+			suffix := fmt.Sprintf("%s/s", formatCount(rate))
+			if estimatedFiles > 0 {
+				printProgressBar("  Scanning:", int(scanCount), int(estimatedFiles), suffix)
+			} else {
+				printStatus(fmt.Sprintf("  Scanned: %s (%s)", formatCount(scanCount), suffix))
+			}
 		}
 	})
 	if err != nil {
@@ -118,6 +137,11 @@ func main() {
 	}
 	finishLine(fmt.Sprintf("  Scanned %s files, %s unique sizes",
 		formatCount(fileCount), formatCount(int64(sm.Len()))))
+
+	// Save scan metadata for future progress estimation.
+	if mFile != "" {
+		_ = saveMeta(mFile, &ScanMeta{FileCount: fileCount})
+	}
 
 	// Select top N most impactful sizes.
 	targets := sm.TopN(*topN)

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"syscall"
 	"time"
 	"unsafe"
@@ -150,6 +151,37 @@ func reflinkInPlace(src, dst string) error {
 	}
 
 	return nil
+}
+
+// isMountPoint checks whether path is a filesystem mount point by comparing
+// device IDs with the parent directory.
+func isMountPoint(path string) bool {
+	var pathStat, parentStat syscall.Stat_t
+	if err := syscall.Stat(path, &pathStat); err != nil {
+		return false
+	}
+	parent := filepath.Dir(path)
+	if parent == path {
+		return true // filesystem root
+	}
+	if err := syscall.Stat(parent, &parentStat); err != nil {
+		return false
+	}
+	return pathStat.Dev != parentStat.Dev
+}
+
+// fsFileEstimate returns the approximate number of files on the filesystem
+// containing path, using statfs (total inodes - free inodes).
+func fsFileEstimate(path string) int64 {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0
+	}
+	used := int64(stat.Files) - int64(stat.Ffree)
+	if used <= 0 {
+		return 0
+	}
+	return used
 }
 
 // sameInode reports whether two paths refer to the same inode on the same device.

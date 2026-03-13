@@ -21,6 +21,14 @@ func reflinkInPlace(_, _ string) error {
 	return errUnsupported
 }
 
+func isMountPoint(_ string) bool {
+	return false
+}
+
+func fsFileEstimate(_ string) int64 {
+	return 0
+}
+
 func sameInode(_, _ string) (bool, error) {
 	return false, errUnsupported
 }

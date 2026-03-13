@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 var version = "dev"
@@ -68,6 +69,8 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
+	startTime := time.Now()
+
 	if *hardlink && !*dryRun {
 		fmt.Fprintf(os.Stderr, "WARNING: --hardlink mode creates hard links instead of reflinks.\n")
 		fmt.Fprintf(os.Stderr, "  Hard-linked files share the same inode — editing one file changes ALL copies.\n")
@@ -98,13 +101,15 @@ func main() {
 		filenameHashes = make(map[int64]uint64)
 	}
 	var scanCount int64
+	scanStart := time.Now()
 	fileCount, err := WalkSizes(root, sm, *snapshots, *minSize, func(path string, size int64) {
 		if filenameHashes != nil {
 			filenameHashes[size] += hashFilename(filepath.Base(path))
 		}
 		scanCount++
 		if scanCount%10_000 == 0 {
-			printCounter("  Scanned:", scanCount)
+			rate := int64(float64(scanCount) / time.Since(scanStart).Seconds())
+			printStatus(fmt.Sprintf("  Scanned: %s (%s/s)", formatCount(scanCount), formatCount(rate)))
 		}
 	})
 	if err != nil {
@@ -136,6 +141,14 @@ func main() {
 		if len(targets) > tableCount {
 			fmt.Fprintf(os.Stderr, "  ... and %s more sizes\n", formatCount(int64(len(targets)-tableCount)))
 		}
+		var totalTargetFiles int64
+		var totalTargetSavings int64
+		for _, t := range targets {
+			totalTargetFiles += t.Count
+			totalTargetSavings += t.Savings()
+		}
+		fmt.Fprintf(os.Stderr, "  %4s  %10s  %8s  %10s\n",
+			"", "", formatCount(totalTargetFiles), fmtSize(totalTargetSavings))
 	}
 
 	// Filter out size groups unchanged since last run.
@@ -170,6 +183,7 @@ func main() {
 	}
 
 	var filesProcessed int64 // cumulative files across all groups
+	var noDupGroups int64    // groups where no action was taken
 
 	// processGroup deduplicates one size group and accumulates stats.
 	processGroup := func(idx, total int, size int64, paths []string) {
@@ -202,11 +216,13 @@ func main() {
 			parts = append(parts, fmt.Sprintf("%s errors",
 				formatCount(stats.Errors)))
 		}
-		summary := strings.Join(parts, ", ")
-		if summary == "" {
-			summary = "no duplicates"
+		if len(parts) == 0 {
+			noDupGroups++
+			// Clear progress bar but don't print a line for no-action groups.
+			printStatus("")
+		} else {
+			finishLine(fmt.Sprintf("%s  \u2713 %s", prefix, strings.Join(parts, ", ")))
 		}
-		finishLine(fmt.Sprintf("%s  \u2713 %s", prefix, summary))
 
 		totalStats.BytesSaved += stats.BytesSaved
 		totalStats.FilesDeduped += stats.FilesDeduped
@@ -239,7 +255,7 @@ func main() {
 		collected, err := CollectFiles(root, targetSet, *snapshots, *minSize, dirPool, func() {
 			collectCount++
 			if collectCount%10_000 == 0 {
-				printCounter("  Found:", collectCount)
+				printProgressBar("  Collecting:", int(collectCount), int(expectedFiles), "")
 			}
 		})
 		if err != nil {
@@ -336,7 +352,7 @@ func main() {
 
 			collectCount++
 			if collectCount%10_000 == 0 {
-				printCounter("  Found:", collectCount)
+				printProgressBar("  Collecting:", int(collectCount), int(expectedFiles), "")
 			}
 
 			dir, name := filepath.Dir(path), filepath.Base(path)
@@ -425,17 +441,27 @@ func main() {
 	}
 
 	// Final summary.
+	elapsed := time.Since(startTime).Truncate(time.Millisecond)
 	if *quiet {
 		if totalStats.FilesDeduped > 0 || totalStats.Errors > 0 {
-			fmt.Fprintf(os.Stderr, "fastdedup: %s deduped, %s saved, %s already, %s errors\n",
+			fmt.Fprintf(os.Stderr, "fastdedup: %s: %s deduped, %s saved, %s already, %s errors (%s)\n",
+				root,
 				formatCount(totalStats.FilesDeduped), fmtSize(totalStats.BytesSaved),
-				formatCount(totalStats.AlreadyDeduped), formatCount(totalStats.Errors))
+				formatCount(totalStats.AlreadyDeduped), formatCount(totalStats.Errors),
+				elapsed)
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "\nDone!\n")
+		fmt.Fprintf(os.Stderr, "\nDone in %s!\n", elapsed)
 		fmt.Fprintf(os.Stderr, "  Files deduped:    %s\n", formatCount(totalStats.FilesDeduped))
 		fmt.Fprintf(os.Stderr, "  Space saved:      %s\n", fmtSize(totalStats.BytesSaved))
 		fmt.Fprintf(os.Stderr, "  Already deduped:  %s\n", formatCount(totalStats.AlreadyDeduped))
+		if noDupGroups > 0 {
+			fmt.Fprintf(os.Stderr, "  No duplicates:    %s groups\n", formatCount(noDupGroups))
+		}
 		fmt.Fprintf(os.Stderr, "  Errors:           %s\n", formatCount(totalStats.Errors))
+	}
+
+	if totalStats.Errors > 0 {
+		os.Exit(1)
 	}
 }

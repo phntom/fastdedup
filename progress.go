@@ -86,6 +86,14 @@ func printCounter(prefix string, count int64) {
 	fmt.Fprintf(os.Stderr, "\r\033[K%s %s", prefix, formatCount(count))
 }
 
+// printStatus renders a status message on stderr, overwriting the current line.
+func printStatus(msg string) {
+	if quietMode || !isTTY {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "\r\033[K%s", msg)
+}
+
 // finishLine completes the current line and moves to the next.
 func finishLine(text string) {
 	if quietMode {

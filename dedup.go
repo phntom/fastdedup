@@ -311,7 +311,7 @@ func dedupFile(src, dst string, fixPerms bool) error {
 	if renameErr != nil {
 		// Directory may be write-protected; fall back to in-place reflink.
 		slog.Debug("rename failed, trying in-place reflink", "dst", dst, "error", renameErr)
-		return dedupFileInPlace(src, dst, dstInfo)
+		return dedupFileInPlace(src, dst, dstInfo, fixPerms)
 	}
 	if restoreDir != nil {
 		defer restoreDir()
@@ -349,7 +349,7 @@ func dedupFile(src, dst string, fixPerms bool) error {
 // dedupFileInPlace performs a reflink by truncating and cloning into the existing
 // dst inode, avoiding any directory entry changes. A content backup is kept in
 // the system temp directory for rollback on failure.
-func dedupFileInPlace(src, dst string, dstInfo os.FileInfo) error {
+func dedupFileInPlace(src, dst string, dstInfo os.FileInfo, fixPerms bool) error {
 	// Back up dst content to a temp file.
 	backupPath, err := backupToTemp(dst)
 	if err != nil {
@@ -357,6 +357,16 @@ func dedupFileInPlace(src, dst string, dstInfo os.FileInfo) error {
 	}
 	//goland:noinspection GoUnhandledErrorResult
 	defer os.Remove(backupPath)
+
+	// If the file is read-only and --fix-perms is set, temporarily make it writable.
+	origMode := dstInfo.Mode().Perm()
+	if fixPerms && origMode&0200 == 0 {
+		if err := os.Chmod(dst, origMode|0200); err != nil {
+			slog.Debug("cannot chmod file writable", "path", dst, "error", err)
+		} else {
+			defer os.Chmod(dst, origMode)
+		}
+	}
 
 	// Reflink in-place: truncate dst and FICLONE from src.
 	if err := reflinkInPlace(src, dst); err != nil {

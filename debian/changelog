@@ -1,5 +1,5 @@
-fastdedup (0.0.2~ppa1~noble) noble; urgency=low
+fastdedup (0.0.5~ppa1~jammy) jammy; urgency=low
 
-  * Release v0.0.2
+  * Release v0.0.5
 
- -- PHANTOm <phantom@kix.co.il>  Fri, 13 Mar 2026 13:09:58 +0200
+ -- PHANTOm <phantom@kix.co.il>  Fri, 13 Mar 2026 18:59:53 +0200

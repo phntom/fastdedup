@@ -1,5 +1,5 @@
-fastdedup (0.0.1~ppa3~noble) noble; urgency=low
+fastdedup (0.0.2~ppa1~noble) noble; urgency=low
 
-  * Fix build: downgrade x/sys for Go 1.22 compat, set GOTOOLCHAIN=local
+  * Release v0.0.2
 
- -- PHANTOm <phantom@kix.co.il>  Thu, 12 Mar 2026 20:30:00 +0200
+ -- PHANTOm <phantom@kix.co.il>  Fri, 13 Mar 2026 13:09:58 +0200

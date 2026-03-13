@@ -56,17 +56,16 @@ for arch in "${ARCHES[@]}"; do
     -s dir -n "$NAME" -v "$VERSION"
     --description "$DESC"
     -C "$STAGING"
-    usr/bin/${NAME}
   )
 
   printf "  %-10s deb " "linux/$arch"
-  fpm "${FPM_COMMON[@]}" -t deb -a "$DEB" -p "${RELEASE_DIR}/" 2>/dev/null
+  fpm "${FPM_COMMON[@]}" -t deb -a "$DEB" -p "${RELEASE_DIR}/" usr/bin/${NAME} 2>/dev/null
   printf "rpm "
-  fpm "${FPM_COMMON[@]}" -t rpm -a "$RPM" -p "${RELEASE_DIR}/" 2>/dev/null
+  fpm "${FPM_COMMON[@]}" -t rpm -a "$RPM" -p "${RELEASE_DIR}/" usr/bin/${NAME} 2>/dev/null
   printf "apk "
-  fpm "${FPM_COMMON[@]}" -t apk -a "$APK" -p "${RELEASE_DIR}/" 2>/dev/null
+  fpm "${FPM_COMMON[@]}" -t apk -a "$APK" -p "${RELEASE_DIR}/" usr/bin/${NAME} 2>/dev/null
   printf "sh "
-  fpm "${FPM_COMMON[@]}" -t sh  -a "$DEB" -p "${RELEASE_DIR}/${NAME}-${VERSION}-linux-${arch}.sh" 2>/dev/null
+  fpm "${FPM_COMMON[@]}" -t sh  -a "$DEB" -p "${RELEASE_DIR}/${NAME}-${VERSION}-linux-${arch}.sh" usr/bin/${NAME} 2>/dev/null
   echo ""
 
   rm -rf "$STAGING"

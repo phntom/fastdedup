@@ -17,6 +17,10 @@ func reflinkCopy(_, _ string, _ os.FileMode) error {
 	return errUnsupported
 }
 
+func reflinkInPlace(_, _ string) error {
+	return errUnsupported
+}
+
 func sameInode(_, _ string) (bool, error) {
 	return false, errUnsupported
 }

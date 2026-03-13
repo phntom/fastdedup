@@ -41,17 +41,28 @@ func loadCache(path string) map[int64]uint64 {
 	return hashes
 }
 
-// saveCache writes the filename-hash cache to disk.
+// saveCache atomically writes the filename-hash cache to disk.
+// It writes to a temporary file first, then renames, so a Ctrl+C
+// mid-write never corrupts the existing cache.
 func saveCache(path string, hashes map[int64]uint64) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	f, err := os.Create(path)
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	return gob.NewEncoder(f).Encode(hashes)
+	if err := gob.NewEncoder(f).Encode(hashes); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // hashFilename returns a 64-bit FNV-1a hash of a filename.

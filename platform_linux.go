@@ -123,6 +123,35 @@ func reflinkCopy(src, dst string, perm os.FileMode) error {
 	return nil
 }
 
+// reflinkInPlace replaces the content of dst with a reflink clone of src,
+// without creating or removing directory entries. The existing dst inode is
+// truncated and FICLONE'd in place, so this works on write-protected directories.
+func reflinkInPlace(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return fmt.Errorf("open destination: %w", err)
+	}
+	defer dstFile.Close()
+
+	_, _, errno := unix.Syscall(
+		unix.SYS_IOCTL,
+		dstFile.Fd(),
+		uintptr(_FICLONE),
+		srcFile.Fd(),
+	)
+	if errno != 0 {
+		return fmt.Errorf("FICLONE ioctl: %w", errno)
+	}
+
+	return nil
+}
+
 // sameInode reports whether two paths refer to the same inode on the same device.
 func sameInode(a, b string) (bool, error) {
 	var statA, statB syscall.Stat_t

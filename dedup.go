@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 )
 
 // Extent represents a contiguous physical region of a file on disk.
@@ -44,12 +45,19 @@ type fileRef struct {
 }
 
 // CollectFiles walks the tree once and returns file paths grouped by target size.
+// Paths are stored compactly with interned directory strings via the provided DirIntern.
+// If pool is nil, a temporary pool is created (no cross-call sharing).
 // The optional onMatch callback is called for each file matching a target size.
-func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bool, minSize int64, onMatch func()) (map[int64][]string, error) {
-	result := make(map[int64][]string)
+func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bool, minSize int64, pool *DirIntern, onMatch func()) (map[int64][]CompactPath, error) {
+	if pool == nil {
+		pool = NewDirIntern()
+	}
+	result := make(map[int64][]CompactPath)
 	err := walkRandom(root, includeSnapshots, minSize, func(path string, size int64) {
 		if _, ok := targetSet[size]; ok {
-			result[size] = append(result[size], path)
+			dir, name := filepath.Dir(path), filepath.Base(path)
+			iDir, _ := pool.Intern(dir)
+			result[size] = append(result[size], CompactPath{Dir: iDir, Name: name})
 			if onMatch != nil {
 				onMatch()
 			}
@@ -60,7 +68,7 @@ func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bo
 
 // ProcessSizeGroup deduplicates all files of a single size, returning stats.
 // The optional onProgress callback is called with the 1-based index of each file processed.
-func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, rawSizes bool, hardlink bool, onProgress func(current int)) *DedupStats {
+func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, rawSizes bool, hardlink bool, fixPerms bool, onProgress func(current int)) *DedupStats {
 	stats := &DedupStats{}
 	var refs []*fileRef
 
@@ -126,9 +134,9 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 
 			var dedupErr error
 			if hardlink {
-				dedupErr = hardlinkFile(ref.path, path)
+				dedupErr = hardlinkFile(ref.path, path, fixPerms)
 			} else {
-				dedupErr = dedupFile(ref.path, path)
+				dedupErr = dedupFile(ref.path, path, fixPerms)
 			}
 			if dedupErr != nil {
 				slog.Debug("dedup failed", "src", ref.path, "dst", path, "error", dedupErr)
@@ -209,12 +217,28 @@ func isEOF(err error) bool {
 
 // hardlinkFile replaces dst with a hard link to src.
 // On failure, the original file is restored from a temporary backup.
-func hardlinkFile(src, dst string) error {
+func hardlinkFile(src, dst string, fixPerms bool) error {
 	tmpPath := dst + ".dedup-tmp"
 
-	// Step 1: move dst out of the way.
-	if err := os.Rename(dst, tmpPath); err != nil {
-		return fmt.Errorf("rename to tmp: %w", err)
+	// Step 1: move dst out of the way, temporarily fixing directory permissions if needed.
+	renameErr := os.Rename(dst, tmpPath)
+	var restoreDir func()
+	if renameErr != nil && fixPerms {
+		if restore, chErr := addDirWrite(filepath.Dir(dst)); chErr == nil {
+			if os.Rename(dst, tmpPath) == nil {
+				renameErr = nil
+				restoreDir = restore
+				slog.Debug("temporarily added write permission to directory", "dir", filepath.Dir(dst))
+			} else {
+				restore()
+			}
+		}
+	}
+	if renameErr != nil {
+		return fmt.Errorf("rename to tmp: %w", renameErr)
+	}
+	if restoreDir != nil {
+		defer restoreDir()
 	}
 
 	//goland:noinspection GoUnhandledErrorResult
@@ -243,7 +267,9 @@ func hardlinkFile(src, dst string) error {
 
 // dedupFile replaces dst with a reflink copy of src, preserving dst's metadata.
 // On failure, the original file is restored from a temporary backup.
-func dedupFile(src, dst string) error {
+// If the directory is write-protected, it falls back to an in-place reflink
+// with a backup in the system temp directory.
+func dedupFile(src, dst string, fixPerms bool) error {
 	tmpPath := dst + ".dedup-tmp"
 
 	// Capture dst metadata before touching anything.
@@ -252,9 +278,27 @@ func dedupFile(src, dst string) error {
 		return fmt.Errorf("stat dst: %w", err)
 	}
 
-	// Step 1: move dst out of the way.
-	if err := os.Rename(dst, tmpPath); err != nil {
-		return fmt.Errorf("rename to tmp: %w", err)
+	// Step 1: move dst out of the way, temporarily fixing directory permissions if needed.
+	renameErr := os.Rename(dst, tmpPath)
+	var restoreDir func()
+	if renameErr != nil && fixPerms {
+		if restore, chErr := addDirWrite(filepath.Dir(dst)); chErr == nil {
+			if os.Rename(dst, tmpPath) == nil {
+				renameErr = nil
+				restoreDir = restore
+				slog.Debug("temporarily added write permission to directory", "dir", filepath.Dir(dst))
+			} else {
+				restore()
+			}
+		}
+	}
+	if renameErr != nil {
+		// Directory may be write-protected; fall back to in-place reflink.
+		slog.Debug("rename failed, trying in-place reflink", "dst", dst, "error", renameErr)
+		return dedupFileInPlace(src, dst, dstInfo)
+	}
+	if restoreDir != nil {
+		defer restoreDir()
 	}
 
 	//goland:noinspection GoUnhandledErrorResult
@@ -270,24 +314,9 @@ func dedupFile(src, dst string) error {
 	}
 
 	// Step 3: verify the new file shares extents with src (when FIEMAP is available).
-	srcExtents, errSrc := getExtents(src)
-	dstExtents, errDst := getExtents(dst)
-	if errSrc == nil && errDst == nil {
-		if !SameExtents(srcExtents, dstExtents) {
-			rollback()
-			return fmt.Errorf("extents mismatch after reflink (filesystem may not support reflinks)")
-		}
-	} else {
-		// FIEMAP not available (e.g. ZFS) — verify content instead.
-		equal, err := filesEqual(src, dst)
-		if err != nil {
-			rollback()
-			return fmt.Errorf("verify content after reflink: %w", err)
-		}
-		if !equal {
-			rollback()
-			return fmt.Errorf("content mismatch after reflink")
-		}
+	if err := verifyReflink(src, dst); err != nil {
+		rollback()
+		return err
 	}
 
 	// Step 4: restore original file metadata on the new file.
@@ -299,4 +328,124 @@ func dedupFile(src, dst string) error {
 	//goland:noinspection GoUnhandledErrorResult
 	os.Remove(tmpPath)
 	return nil
+}
+
+// dedupFileInPlace performs a reflink by truncating and cloning into the existing
+// dst inode, avoiding any directory entry changes. A content backup is kept in
+// the system temp directory for rollback on failure.
+func dedupFileInPlace(src, dst string, dstInfo os.FileInfo) error {
+	// Back up dst content to a temp file.
+	backupPath, err := backupToTemp(dst)
+	if err != nil {
+		return fmt.Errorf("backup for in-place dedup: %w", err)
+	}
+	//goland:noinspection GoUnhandledErrorResult
+	defer os.Remove(backupPath)
+
+	// Reflink in-place: truncate dst and FICLONE from src.
+	if err := reflinkInPlace(src, dst); err != nil {
+		restoreFromTemp(backupPath, dst)
+		return fmt.Errorf("in-place reflink: %w", err)
+	}
+
+	// Verify.
+	if err := verifyReflink(src, dst); err != nil {
+		restoreFromTemp(backupPath, dst)
+		return err
+	}
+
+	// Restore metadata (ownership, permissions, timestamps).
+	if err := restoreMetadata(dst, dstInfo); err != nil {
+		slog.Debug("metadata restoration partial", "path", dst, "error", err)
+	}
+
+	return nil
+}
+
+// verifyReflink checks that src and dst share the same data after a reflink.
+func verifyReflink(src, dst string) error {
+	srcExtents, errSrc := getExtents(src)
+	dstExtents, errDst := getExtents(dst)
+	if errSrc == nil && errDst == nil {
+		if !SameExtents(srcExtents, dstExtents) {
+			return fmt.Errorf("extents mismatch after reflink (filesystem may not support reflinks)")
+		}
+		return nil
+	}
+	// FIEMAP not available (e.g. ZFS) — verify content instead.
+	equal, err := filesEqual(src, dst)
+	if err != nil {
+		return fmt.Errorf("verify content after reflink: %w", err)
+	}
+	if !equal {
+		return fmt.Errorf("content mismatch after reflink")
+	}
+	return nil
+}
+
+// backupToTemp copies the content of path into a temporary file and returns
+// the temp file path. The caller must remove the temp file when done.
+func backupToTemp(path string) (string, error) {
+	src, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer src.Close()
+
+	tmp, err := os.CreateTemp("", "dedup-backup-*")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmp.Name()
+
+	if _, err := io.Copy(tmp, src); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+	return tmpPath, nil
+}
+
+// restoreFromTemp copies content from a temp backup back into dst (in-place).
+//
+//goland:noinspection GoUnhandledErrorResult
+func restoreFromTemp(backupPath, dst string) {
+	src, err := os.Open(backupPath)
+	if err != nil {
+		return
+	}
+	defer src.Close()
+
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_TRUNC, 0)
+	if err != nil {
+		return
+	}
+	defer dstFile.Close()
+
+	io.Copy(dstFile, src)
+}
+
+// addDirWrite temporarily adds owner-write permission to a directory.
+// It returns a restore function that restores the original permissions.
+func addDirWrite(dir string) (restore func(), err error) {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, err
+	}
+	origMode := info.Mode().Perm()
+	if origMode&0200 != 0 {
+		// Already writable — nothing to do.
+		return func() {}, nil
+	}
+	if err := os.Chmod(dir, origMode|0200); err != nil {
+		return nil, err
+	}
+	return func() {
+		//goland:noinspection GoUnhandledErrorResult
+		os.Chmod(dir, origMode)
+	}, nil
 }

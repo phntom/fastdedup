@@ -21,8 +21,10 @@ func main() {
 		quiet        = flag.Bool("q", false, "quiet mode — only print final summary (for cronjobs)")
 		batch        = flag.Bool("batch", false, "collect all target files in one pass (faster, uses more memory)")
 		lowMemory    = flag.Bool("low-memory", false, "scan separately for each file size (lowest memory, slower)")
+		memBudgetMB  = flag.Int64("mem-budget", 256, "memory budget in MiB for path cache in default mode")
 		noCache      = flag.Bool("no-cache", false, "ignore saved state — reprocess all file sizes even if unchanged since last run")
 		hardlink     = flag.Bool("hardlink", false, "use hard links instead of reflinks (works on any filesystem, but linked files share all changes)")
+		fixPerms     = flag.Bool("fix-perms", false, "temporarily add write permission to read-only directories during dedup, then restore")
 		rawSizes     = flag.Bool("raw-sizes", false, "show raw byte counts instead of human-readable")
 		snapshots    = flag.Bool("snapshots", false, "include .snapshots directories (skipped by default)")
 		showVersion  = flag.Bool("version", false, "print version and exit")
@@ -156,6 +158,7 @@ func main() {
 	// === Pass 2: Deduplicate ===
 	totalStats := &DedupStats{}
 	errorSizes := make(map[int64]bool) // track which size groups had errors
+	dirPool := NewDirIntern()          // shared directory string interner for compact paths
 
 	// processGroup deduplicates one size group and accumulates stats.
 	processGroup := func(idx, total int, size int64, paths []string) {
@@ -165,7 +168,7 @@ func main() {
 			fmtSize(size), formatCount(int64(len(paths))))
 
 		step := max(1, len(paths)/200)
-		stats := ProcessSizeGroup(paths, size, *dryRun, *verbose, *rawSizes, *hardlink, func(current int) {
+		stats := ProcessSizeGroup(paths, size, *dryRun, *verbose, *rawSizes, *hardlink, *fixPerms, func(current int) {
 			if current%step == 0 || current == len(paths) {
 				printProgressBar(prefix, current, len(paths), "")
 			}
@@ -197,6 +200,14 @@ func main() {
 		if stats.Errors > 0 {
 			errorSizes[size] = true
 		}
+
+		// Incrementally save cache after each completed group so Ctrl+C doesn't lose progress.
+		if cacheFile != "" && !*dryRun && !errorSizes[size] {
+			cached[size] = filenameHashes[size]
+			if err := saveCache(cacheFile, cached); err != nil {
+				slog.Debug("failed to save cache", "error", err)
+			}
+		}
 	}
 
 	if *batch {
@@ -210,7 +221,7 @@ func main() {
 		}
 
 		var collectCount int64
-		collected, err := CollectFiles(root, targetSet, *snapshots, *minSize, func() {
+		collected, err := CollectFiles(root, targetSet, *snapshots, *minSize, dirPool, func() {
 			collectCount++
 			if collectCount%10_000 == 0 {
 				printCounter("  Found:", collectCount)
@@ -223,7 +234,7 @@ func main() {
 
 		type processEntry struct {
 			size  int64
-			paths []string
+			paths []CompactPath
 		}
 		var toProcess []processEntry
 		var totalFiles int64
@@ -253,7 +264,7 @@ func main() {
 		}
 
 		for i, entry := range toProcess {
-			processGroup(i, len(toProcess), entry.size, entry.paths)
+			processGroup(i, len(toProcess), entry.size, ExpandPaths(entry.paths))
 		}
 	} else if *lowMemory {
 		// Low-memory mode: scan for each file size separately.
@@ -267,7 +278,7 @@ func main() {
 
 		for i, t := range targets {
 			singleSet := map[int64]struct{}{t.Size: {}}
-			collected, err := CollectFiles(root, singleSet, *snapshots, *minSize, nil)
+			collected, err := CollectFiles(root, singleSet, *snapshots, *minSize, dirPool, nil)
 			if err != nil {
 				slog.Debug("collection failed", "size", t.Size, "error", err)
 				continue
@@ -276,7 +287,7 @@ func main() {
 			if len(paths) < 2 {
 				continue
 			}
-			processGroup(i, len(targets), t.Size, paths)
+			processGroup(i, len(targets), t.Size, ExpandPaths(paths))
 		}
 	} else {
 		// Default: bounded collection with automatic eviction for large groups.
@@ -289,13 +300,13 @@ func main() {
 		}
 
 		type cachedGroup struct {
-			paths   []string
+			paths   []CompactPath
 			memUsed int64
 		}
 		cache := make(map[int64]*cachedGroup)
 		evicted := make(map[int64]bool)
 		var totalMem int64
-		const memBudget int64 = 256 * 1024 * 1024 // 256 MiB for path cache
+		memBudget := *memBudgetMB * 1024 * 1024
 
 		var collectCount int64
 		_ = walkRandom(root, *snapshots, *minSize, func(path string, size int64) {
@@ -311,13 +322,18 @@ func main() {
 				printCounter("  Found:", collectCount)
 			}
 
-			pathMem := int64(len(path)) + 16 // string content + header
+			dir, name := filepath.Dir(path), filepath.Base(path)
+			iDir, dirCost := dirPool.Intern(dir)
+			cp := CompactPath{Dir: iDir, Name: name}
+			pathMem := cp.MemCost() // per-entry cost (shared Dir excluded)
+			totalMem += dirCost     // count new directory strings against budget
+
 			g, ok := cache[size]
 			if !ok {
 				g = &cachedGroup{}
 				cache[size] = g
 			}
-			g.paths = append(g.paths, path)
+			g.paths = append(g.paths, cp)
 			g.memUsed += pathMem
 			totalMem += pathMem
 
@@ -357,24 +373,24 @@ func main() {
 		}
 
 		for i, t := range targets {
-			var paths []string
+			var compact []CompactPath
 			if g, ok := cache[t.Size]; ok {
-				paths = g.paths
+				compact = g.paths
 				delete(cache, t.Size) // free memory as we go
 			} else {
 				// Evicted or not found — do a per-size walk.
 				singleSet := map[int64]struct{}{t.Size: {}}
-				c, err := CollectFiles(root, singleSet, *snapshots, *minSize, nil)
+				c, err := CollectFiles(root, singleSet, *snapshots, *minSize, dirPool, nil)
 				if err != nil {
 					slog.Debug("collection failed", "size", t.Size, "error", err)
 					continue
 				}
-				paths = c[t.Size]
+				compact = c[t.Size]
 			}
-			if len(paths) < 2 {
+			if len(compact) < 2 {
 				continue
 			}
-			processGroup(i, len(targets), t.Size, paths)
+			processGroup(i, len(targets), t.Size, ExpandPaths(compact))
 		}
 	}
 

@@ -10,6 +10,9 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	install -D -m 0755 fastdedup debian/fastdedup/usr/bin/fastdedup
+	install -D -m 0644 debian/fastdedup.default debian/fastdedup/etc/default/fastdedup
+	install -D -m 0755 debian/fastdedup-cron debian/fastdedup-daily/etc/cron.daily/fastdedup
+	install -D -m 0755 debian/fastdedup-cron debian/fastdedup-weekly/etc/cron.weekly/fastdedup
 
 override_dh_auto_test:
 	# skip tests for PPA build

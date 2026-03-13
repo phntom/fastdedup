@@ -1,0 +1,38 @@
+#!/bin/sh
+# Scheduled fastdedup run — deduplicate files using reflinks
+# Configuration: /etc/default/fastdedup
+
+set -e
+
+[ -x /usr/bin/fastdedup ] || exit 0
+
+# Defaults
+ENABLED=yes
+OPTIONS="-q"
+MOUNTPOINTS=""
+
+# Load configuration
+if [ -f /etc/default/fastdedup ]; then
+    . /etc/default/fastdedup
+fi
+
+# Exit if disabled
+[ "$ENABLED" = "yes" ] || exit 0
+
+# Auto-detect supported filesystems if no explicit mount points configured
+if [ -z "$MOUNTPOINTS" ]; then
+    MOUNTPOINTS=$(findmnt -rn -t btrfs,xfs,zfs -o TARGET 2>/dev/null || true)
+fi
+
+[ -z "$MOUNTPOINTS" ] && exit 0
+
+# Build extra options
+EXTRA_OPTS=""
+if [ -n "$MIN_SIZE" ]; then
+    EXTRA_OPTS="$EXTRA_OPTS --min-size=$MIN_SIZE"
+fi
+
+# Deduplicate each mount point
+for mp in $MOUNTPOINTS; do
+    /usr/bin/fastdedup $OPTIONS $EXTRA_OPTS "$mp" || true
+done

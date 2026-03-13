@@ -11,8 +11,22 @@ Vcs-Browser: https://github.com/phntom/fastdedup
 Package: fastdedup
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: Fast file deduplication for btrfs using reflinks
- fastdedup performs two-pass deduplication on btrfs filesystems.
- It surveys file sizes to identify the most impactful duplicates,
- then deduplicates them using btrfs reflinks for instant,
- copy-on-write deduplication with no extra disk space.
+Description: Fast file deduplication using reflinks (btrfs, XFS, ZFS)
+ fastdedup performs two-pass deduplication on filesystems that support
+ reflinks (btrfs, XFS, ZFS). It surveys file sizes to identify the
+ most impactful duplicates, then deduplicates them using reflinks for
+ instant, copy-on-write deduplication with no extra disk space.
+
+Package: fastdedup-daily
+Architecture: all
+Depends: fastdedup, ${misc:Depends}
+Description: Daily automatic file deduplication using reflinks
+ Installs a daily cron job that runs fastdedup on all mounted btrfs,
+ XFS, and ZFS filesystems. Configure via /etc/default/fastdedup.
+
+Package: fastdedup-weekly
+Architecture: all
+Depends: fastdedup, ${misc:Depends}
+Description: Weekly automatic file deduplication using reflinks
+ Installs a weekly cron job that runs fastdedup on all mounted btrfs,
+ XFS, and ZFS filesystems. Configure via /etc/default/fastdedup.

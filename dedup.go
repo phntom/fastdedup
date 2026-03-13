@@ -68,6 +68,12 @@ func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bo
 
 // ProcessSizeGroup deduplicates all files of a single size, returning stats.
 // The optional onProgress callback is called with the 1-based index of each file processed.
+//
+// Files are compared against a growing list of reference files (one per unique
+// content group). When content matches but the dedup operation fails (e.g.
+// permissions, cross-device), the file is tried against remaining refs. If all
+// matching refs fail, the file is added as an alternative ref so future files
+// can dedup against it instead.
 func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, rawSizes bool, hardlink bool, fixPerms bool, onProgress func(current int)) *DedupStats {
 	stats := &DedupStats{}
 	var refs []*fileRef
@@ -88,7 +94,9 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 			continue
 		}
 
-		matched := false
+		deduped := false
+		contentMatch := false
+		dedupErrors := 0
 		for _, ref := range refs {
 			// Same inode (hard link) — already sharing storage.
 			if same, _ := sameInode(ref.path, path); same {
@@ -97,7 +105,7 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 					ref.extents = extents
 				}
 				stats.AlreadyDeduped++
-				matched = true
+				deduped = true
 				break
 			}
 
@@ -109,7 +117,7 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 					ref.extents = extents
 				}
 				stats.AlreadyDeduped++
-				matched = true
+				deduped = true
 				break
 			}
 
@@ -123,12 +131,14 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 				continue
 			}
 
-			// Identical content — deduplicate!
+			// Identical content found.
+			contentMatch = true
+
 			if dryRun {
 				fmt.Printf("[dry-run] dedup: %s -> %s (%s)\n", path, ref.path, formatSize(size, rawSizes))
 				stats.BytesSaved += size
 				stats.FilesDeduped++
-				matched = true
+				deduped = true
 				break
 			}
 
@@ -139,10 +149,9 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 				dedupErr = dedupFile(ref.path, path, fixPerms)
 			}
 			if dedupErr != nil {
-				slog.Debug("dedup failed", "src", ref.path, "dst", path, "error", dedupErr)
-				stats.Errors++
-				matched = true
-				break
+				slog.Debug("dedup failed, trying next ref", "src", ref.path, "dst", path, "error", dedupErr)
+				dedupErrors++
+				continue // try next ref — another ref with same content may work
 			}
 
 			if verbose {
@@ -151,12 +160,19 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 			slog.Debug("deduped", "file", path, "ref", ref.path, "size", size)
 			stats.BytesSaved += size
 			stats.FilesDeduped++
-			matched = true
+			deduped = true
 			break
 		}
 
-		if !matched {
-			// New content group for this size.
+		if !deduped {
+			if contentMatch {
+				// Content matched a ref but all dedup attempts failed.
+				// Add this file as an alternative ref — it may succeed as
+				// source where the original ref could not.
+				stats.Errors++
+				slog.Debug("all dedup attempts failed for content match, adding as alternative ref",
+					"path", path, "attempts", dedupErrors)
+			}
 			refs = append(refs, &fileRef{path: path, extents: extents})
 		}
 	}

@@ -8,7 +8,7 @@ DESC="Fast file deduplication using reflinks (btrfs, XFS, ZFS)"
 ARCHES=(amd64 arm64 386 arm riscv64 ppc64le s390x mips64le)
 MAINTAINER="PHANTOm <phantom@kix.co.il>"
 GPG_KEY="B2BE8C2EBFB7AAC6572E933C779CD5498B743A1B"
-PPA_SERIES=(jammy noble questing)
+PPA_SERIES=(jammy noble oracular plucky questing resolute)
 PPA_TARGET="phntm-ppa"
 
 # Series that need a bundled Go toolchain (system Go is too old)
@@ -54,24 +54,45 @@ for arch in "${ARCHES[@]}"; do
   esac
 
   STAGING=$(mktemp -d)
-  mkdir -p "${STAGING}/usr/bin"
+  mkdir -p "${STAGING}/usr/bin" "${STAGING}/etc/default"
   cp "${RELEASE_DIR}/${NAME}-linux-${arch}" "${STAGING}/usr/bin/${NAME}"
+  cp debian/fastdedup.default "${STAGING}/etc/default/${NAME}"
 
   FPM_COMMON=(
     -s dir -n "$NAME" -v "$VERSION"
     --description "$DESC"
+    --config-files etc/default/${NAME}
     -C "$STAGING"
   )
 
   printf "  %-10s deb " "linux/$arch"
-  fpm "${FPM_COMMON[@]}" -t deb -a "$DEB" -p "${RELEASE_DIR}/" usr/bin/${NAME} 2>/dev/null
+  fpm "${FPM_COMMON[@]}" -t deb -a "$DEB" -p "${RELEASE_DIR}/" usr/bin/${NAME} etc/default/${NAME} 2>/dev/null
   printf "rpm "
-  fpm "${FPM_COMMON[@]}" -t rpm -a "$RPM" -p "${RELEASE_DIR}/" usr/bin/${NAME} 2>/dev/null
+  fpm "${FPM_COMMON[@]}" -t rpm -a "$RPM" -p "${RELEASE_DIR}/" usr/bin/${NAME} etc/default/${NAME} 2>/dev/null
   printf "apk "
-  fpm "${FPM_COMMON[@]}" -t apk -a "$APK" -p "${RELEASE_DIR}/" usr/bin/${NAME} 2>/dev/null
+  fpm "${FPM_COMMON[@]}" -t apk -a "$APK" -p "${RELEASE_DIR}/" usr/bin/${NAME} etc/default/${NAME} 2>/dev/null
   printf "sh "
-  fpm "${FPM_COMMON[@]}" -t sh  -a "$DEB" -p "${RELEASE_DIR}/${NAME}-${VERSION}-linux-${arch}.sh" usr/bin/${NAME} 2>/dev/null
+  fpm "${FPM_COMMON[@]}" -t sh  -a "$DEB" -p "${RELEASE_DIR}/${NAME}-${VERSION}-linux-${arch}.sh" usr/bin/${NAME} etc/default/${NAME} 2>/dev/null
   echo ""
+
+  rm -rf "$STAGING"
+done
+
+# ── Cron packages (architecture-independent) ─────────────────────────
+echo "==> Creating cron packages..."
+for variant in daily weekly; do
+  STAGING=$(mktemp -d)
+  mkdir -p "${STAGING}/etc/cron.${variant}"
+  cp debian/fastdedup-cron "${STAGING}/etc/cron.${variant}/${NAME}"
+  chmod +x "${STAGING}/etc/cron.${variant}/${NAME}"
+
+  printf "  %-10s deb " "${NAME}-${variant}"
+  fpm -s dir -n "${NAME}-${variant}" -v "$VERSION" \
+    --description "$(echo "${variant^}") automatic file deduplication using reflinks" \
+    --depends "$NAME" \
+    -a all -C "$STAGING" -t deb -p "${RELEASE_DIR}/" \
+    etc/cron.${variant}/${NAME} 2>/dev/null
+  echo "ok"
 
   rm -rf "$STAGING"
 done
@@ -160,6 +181,20 @@ Description: ${DESC}
  reflinks (btrfs, XFS, ZFS). It surveys file sizes to identify the
  most impactful duplicates, then deduplicates them using reflinks for
  instant, copy-on-write deduplication with no extra disk space.
+
+Package: ${NAME}-daily
+Architecture: all
+Depends: ${NAME}, \${misc:Depends}
+Description: Daily automatic file deduplication using reflinks
+ Installs a daily cron job that runs fastdedup on all mounted btrfs,
+ XFS, and ZFS filesystems. Configure via /etc/default/fastdedup.
+
+Package: ${NAME}-weekly
+Architecture: all
+Depends: ${NAME}, \${misc:Depends}
+Description: Weekly automatic file deduplication using reflinks
+ Installs a weekly cron job that runs fastdedup on all mounted btrfs,
+ XFS, and ZFS filesystems. Configure via /etc/default/fastdedup.
 CTRL
 
     # Use modified debian/rules that uses bundled Go
@@ -178,6 +213,9 @@ override_dh_auto_build:
 
 override_dh_auto_install:
 	install -D -m 0755 fastdedup debian/fastdedup/usr/bin/fastdedup
+	install -D -m 0644 debian/fastdedup.default debian/fastdedup/etc/default/fastdedup
+	install -D -m 0755 debian/fastdedup-cron debian/fastdedup-daily/etc/cron.daily/fastdedup
+	install -D -m 0755 debian/fastdedup-cron debian/fastdedup-weekly/etc/cron.weekly/fastdedup
 
 override_dh_auto_test:
 	# skip tests for PPA build

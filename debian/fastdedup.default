@@ -1,0 +1,18 @@
+# /etc/default/fastdedup
+# Configuration for fastdedup scheduled deduplication
+# Used by /etc/cron.daily/fastdedup and /etc/cron.weekly/fastdedup
+
+# Set to "no" to disable automatic deduplication
+ENABLED=yes
+
+# Options passed to fastdedup
+# Default: quiet mode suitable for cron
+OPTIONS="-q"
+
+# Space-separated list of mount points to deduplicate
+# Leave empty to auto-detect all mounted btrfs, XFS, and ZFS filesystems
+MOUNTPOINTS=""
+
+# Minimum file size in bytes (default: 524288 = 512 KiB)
+# Uncomment to override:
+# MIN_SIZE=524288

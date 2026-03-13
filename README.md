@@ -57,7 +57,7 @@ sudo apt update
 sudo apt install -y fastdedup
 ```
 
-Supports Ubuntu 22.04 (jammy), 24.04 (noble), and 25.10 (questing).
+Supports Ubuntu 22.04 (jammy), 24.04 (noble), 24.10 (oracular), 25.04 (plucky), 25.10 (questing), and 26.04 (resolute).
 
 ### Debian/Ubuntu (manual)
 
@@ -88,6 +88,43 @@ chmod +x fastdedup-linux-amd64
 sudo mv fastdedup-linux-amd64 /usr/local/bin/fastdedup
 ```
 
+## Scheduled deduplication
+
+Install `fastdedup-daily` or `fastdedup-weekly` to automatically deduplicate all mounted btrfs, XFS, and ZFS filesystems:
+
+### Ubuntu (PPA)
+```bash
+sudo apt install fastdedup-daily   # runs daily via /etc/cron.daily
+# or
+sudo apt install fastdedup-weekly  # runs weekly via /etc/cron.weekly
+```
+
+### Manual (from GitHub release)
+```bash
+sudo dpkg -i fastdedup_*_amd64.deb fastdedup-daily_*_all.deb
+```
+
+### Configuration
+
+Edit `/etc/default/fastdedup` to customize:
+
+```bash
+# Set to "no" to disable automatic deduplication
+ENABLED=yes
+
+# Options passed to fastdedup (default: quiet mode)
+OPTIONS="-q"
+
+# Space-separated list of mount points to deduplicate
+# Leave empty to auto-detect all mounted btrfs, XFS, and ZFS filesystems
+MOUNTPOINTS=""
+
+# Minimum file size in bytes (default: 524288 = 512 KiB)
+# MIN_SIZE=524288
+```
+
+By default, the cron job auto-detects all mounted btrfs, XFS, and ZFS filesystems using `findmnt` and runs fastdedup in quiet mode on each.
+
 ## Usage
 
 ```bash
@@ -104,8 +141,10 @@ fastdedup [flags] [directory]
 | `-q` | false | Quiet mode — only print final summary (for cronjobs) |
 | `--batch` | false | Collect all target files in one pass (faster, uses more memory) |
 | `--low-memory` | false | Scan separately for each file size (lowest memory, slower) |
+| `--mem-budget` | 256 | Memory budget in MiB for path cache in default mode |
 | `--no-cache` | false | Reprocess all file sizes even if unchanged since last run |
 | `--hardlink` | false | Use hard links instead of reflinks (works on any filesystem — see warning below) |
+| `--fix-perms` | false | Temporarily add write permission to read-only directories during dedup, then restore |
 | `--snapshots` | false | Include `.snapshots` directories (skipped by default) |
 | `--raw-sizes` | false | Show raw byte counts instead of human-readable |
 

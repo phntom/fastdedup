@@ -49,11 +49,12 @@ func main() {
 		root = flag.Arg(0)
 	}
 
-	// Resolve to canonical path (symlinks, .., trailing slashes) for display and cache keying.
+	// Resolve to canonical absolute path for display and cache keying.
+	if absRoot, err := filepath.Abs(root); err == nil {
+		root = absRoot
+	}
 	if canonical, err := filepath.EvalSymlinks(root); err == nil {
 		root = canonical
-	} else if absRoot, err := filepath.Abs(root); err == nil {
-		root = absRoot
 	}
 
 	// Set log level and quiet mode.
@@ -160,6 +161,16 @@ func main() {
 	errorSizes := make(map[int64]bool) // track which size groups had errors
 	dirPool := NewDirIntern()          // shared directory string interner for compact paths
 
+	// Compute expected totals from pass 1 for overall progress.
+	var expectedFiles int64
+	var expectedSavings int64
+	for _, t := range targets {
+		expectedFiles += t.Count
+		expectedSavings += t.Savings()
+	}
+
+	var filesProcessed int64 // cumulative files across all groups
+
 	// processGroup deduplicates one size group and accumulates stats.
 	processGroup := func(idx, total int, size int64, paths []string) {
 		numWidth := len(fmt.Sprintf("%d", total))
@@ -168,11 +179,15 @@ func main() {
 			fmtSize(size), formatCount(int64(len(paths))))
 
 		step := max(1, len(paths)/200)
+		groupBase := filesProcessed
 		stats := ProcessSizeGroup(paths, size, *dryRun, *verbose, *rawSizes, *hardlink, *fixPerms, func(current int) {
 			if current%step == 0 || current == len(paths) {
-				printProgressBar(prefix, current, len(paths), "")
+				overallPct := int((groupBase + int64(current)) * 100 / expectedFiles)
+				suffix := fmt.Sprintf("(%d%%)", overallPct)
+				printProgressBar(prefix, current, len(paths), suffix)
 			}
 		})
+		filesProcessed += int64(len(paths))
 
 		var parts []string
 		if stats.FilesDeduped > 0 {
@@ -256,11 +271,12 @@ func main() {
 		}
 
 		if !*quiet {
-			header := "\nDeduplicating:"
+			dryLabel := ""
 			if *dryRun {
-				header = "\nDeduplicating (dry run):"
+				dryLabel = " (dry run)"
 			}
-			fmt.Fprintf(os.Stderr, "%s\n", header)
+			fmt.Fprintf(os.Stderr, "\nDeduplicating%s: %s groups, %s files, up to %s potential savings\n",
+				dryLabel, formatCount(int64(len(toProcess))), formatCount(expectedFiles), fmtSize(expectedSavings))
 		}
 
 		for i, entry := range toProcess {
@@ -269,11 +285,12 @@ func main() {
 	} else if *lowMemory {
 		// Low-memory mode: scan for each file size separately.
 		if !*quiet {
-			header := "\nPass 2: Deduplicating:"
+			dryLabel := ""
 			if *dryRun {
-				header = "\nPass 2: Deduplicating (dry run):"
+				dryLabel = " (dry run)"
 			}
-			fmt.Fprintf(os.Stderr, "%s\n", header)
+			fmt.Fprintf(os.Stderr, "\nPass 2: Deduplicating%s: %s groups, %s files, up to %s potential savings\n",
+				dryLabel, formatCount(int64(len(targets))), formatCount(expectedFiles), fmtSize(expectedSavings))
 		}
 
 		for i, t := range targets {
@@ -365,11 +382,12 @@ func main() {
 		}
 
 		if !*quiet {
-			header := "\nDeduplicating:"
+			dryLabel := ""
 			if *dryRun {
-				header = "\nDeduplicating (dry run):"
+				dryLabel = " (dry run)"
 			}
-			fmt.Fprintf(os.Stderr, "%s\n", header)
+			fmt.Fprintf(os.Stderr, "\nDeduplicating%s: %s groups, %s files, up to %s potential savings\n",
+				dryLabel, formatCount(int64(len(targets))), formatCount(expectedFiles), fmtSize(expectedSavings))
 		}
 
 		for i, t := range targets {

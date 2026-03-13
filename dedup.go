@@ -45,9 +45,9 @@ type fileRef struct {
 
 // CollectFiles walks the tree once and returns file paths grouped by target size.
 // The optional onMatch callback is called for each file matching a target size.
-func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bool, onMatch func()) (map[int64][]string, error) {
+func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bool, minSize int64, onMatch func()) (map[int64][]string, error) {
 	result := make(map[int64][]string)
-	err := walkRandom(root, includeSnapshots, func(path string, size int64) {
+	err := walkRandom(root, includeSnapshots, minSize, func(path string, size int64) {
 		if _, ok := targetSet[size]; ok {
 			result[size] = append(result[size], path)
 			if onMatch != nil {
@@ -60,7 +60,7 @@ func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bo
 
 // ProcessSizeGroup deduplicates all files of a single size, returning stats.
 // The optional onProgress callback is called with the 1-based index of each file processed.
-func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, rawSizes bool, onProgress func(current int)) *DedupStats {
+func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, rawSizes bool, hardlink bool, onProgress func(current int)) *DedupStats {
 	stats := &DedupStats{}
 	var refs []*fileRef
 
@@ -71,11 +71,10 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 
 		extents, err := getExtents(path)
 		if err != nil {
-			slog.Debug("cannot get extents, skipping", "path", path, "error", err)
-			continue
+			slog.Debug("cannot get extents (will use content comparison)", "path", path, "error", err)
 		}
 
-		// First file with valid extents — establish as reference.
+		// First file — establish as reference.
 		if len(refs) == 0 {
 			refs = append(refs, &fileRef{path: path, extents: extents})
 			continue
@@ -95,7 +94,8 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 			}
 
 			// Same extents (existing reflink) — already sharing storage.
-			if SameExtents(ref.extents, extents) {
+			// Only check when both sides have valid extents.
+			if extents != nil && ref.extents != nil && SameExtents(ref.extents, extents) {
 				if len(path) < len(ref.path) {
 					ref.path = path
 					ref.extents = extents
@@ -105,7 +105,7 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 				break
 			}
 
-			// Different extents — compare file content byte-by-byte.
+			// Compare file content byte-by-byte.
 			equal, err := filesEqual(ref.path, path)
 			if err != nil {
 				slog.Debug("content comparison failed", "a", ref.path, "b", path, "error", err)
@@ -115,7 +115,7 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 				continue
 			}
 
-			// Identical content, different extents — deduplicate!
+			// Identical content — deduplicate!
 			if dryRun {
 				fmt.Printf("[dry-run] dedup: %s -> %s (%s)\n", path, ref.path, formatSize(size, rawSizes))
 				stats.BytesSaved += size
@@ -124,8 +124,14 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 				break
 			}
 
-			if err := dedupFile(ref.path, path); err != nil {
-				slog.Debug("dedup failed", "src", ref.path, "dst", path, "error", err)
+			var dedupErr error
+			if hardlink {
+				dedupErr = hardlinkFile(ref.path, path)
+			} else {
+				dedupErr = dedupFile(ref.path, path)
+			}
+			if dedupErr != nil {
+				slog.Debug("dedup failed", "src", ref.path, "dst", path, "error", dedupErr)
 				stats.Errors++
 				matched = true
 				break
@@ -201,6 +207,40 @@ func isEOF(err error) bool {
 	return err == io.EOF || err == io.ErrUnexpectedEOF
 }
 
+// hardlinkFile replaces dst with a hard link to src.
+// On failure, the original file is restored from a temporary backup.
+func hardlinkFile(src, dst string) error {
+	tmpPath := dst + ".dedup-tmp"
+
+	// Step 1: move dst out of the way.
+	if err := os.Rename(dst, tmpPath); err != nil {
+		return fmt.Errorf("rename to tmp: %w", err)
+	}
+
+	//goland:noinspection GoUnhandledErrorResult
+	rollback := func() {
+		os.Remove(dst)
+		os.Rename(tmpPath, dst)
+	}
+
+	// Step 2: create hard link from src to dst.
+	if err := os.Link(src, dst); err != nil {
+		rollback()
+		return fmt.Errorf("hard link: %w", err)
+	}
+
+	// Step 3: verify they share the same inode.
+	if same, err := sameInode(src, dst); err != nil || !same {
+		rollback()
+		return fmt.Errorf("hard link verification failed")
+	}
+
+	// Step 4: success — remove the backup.
+	//goland:noinspection GoUnhandledErrorResult
+	os.Remove(tmpPath)
+	return nil
+}
+
 // dedupFile replaces dst with a reflink copy of src, preserving dst's metadata.
 // On failure, the original file is restored from a temporary backup.
 func dedupFile(src, dst string) error {
@@ -229,20 +269,25 @@ func dedupFile(src, dst string) error {
 		return fmt.Errorf("reflink copy: %w", err)
 	}
 
-	// Step 3: verify the new file shares extents with src.
-	srcExtents, err := getExtents(src)
-	if err != nil {
-		rollback()
-		return fmt.Errorf("verify src extents: %w", err)
-	}
-	dstExtents, err := getExtents(dst)
-	if err != nil {
-		rollback()
-		return fmt.Errorf("verify dst extents: %w", err)
-	}
-	if !SameExtents(srcExtents, dstExtents) {
-		rollback()
-		return fmt.Errorf("extents mismatch after reflink (filesystem may not support reflinks)")
+	// Step 3: verify the new file shares extents with src (when FIEMAP is available).
+	srcExtents, errSrc := getExtents(src)
+	dstExtents, errDst := getExtents(dst)
+	if errSrc == nil && errDst == nil {
+		if !SameExtents(srcExtents, dstExtents) {
+			rollback()
+			return fmt.Errorf("extents mismatch after reflink (filesystem may not support reflinks)")
+		}
+	} else {
+		// FIEMAP not available (e.g. ZFS) — verify content instead.
+		equal, err := filesEqual(src, dst)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("verify content after reflink: %w", err)
+		}
+		if !equal {
+			rollback()
+			return fmt.Errorf("content mismatch after reflink")
+		}
 	}
 
 	// Step 4: restore original file metadata on the new file.

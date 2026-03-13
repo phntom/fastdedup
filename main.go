@@ -19,10 +19,10 @@ func main() {
 		quiet        = flag.Bool("q", false, "quiet mode — only print final summary (for cronjobs)")
 		batch        = flag.Bool("batch", false, "collect all target files in one pass (faster, uses more memory)")
 		lowMemory    = flag.Bool("low-memory", false, "scan separately for each file size (lowest memory, slower)")
-		noCache      = flag.Bool("no-cache", false, "disable the dedup cache — always process all sizes")
+		noCache      = flag.Bool("no-cache", false, "ignore saved state — reprocess all file sizes even if unchanged since last run")
+		hardlink     = flag.Bool("hardlink", false, "use hard links instead of reflinks (works on any filesystem, but linked files share all changes)")
 		rawSizes     = flag.Bool("raw-sizes", false, "show raw byte counts instead of human-readable")
 		snapshots    = flag.Bool("snapshots", false, "include .snapshots directories (skipped by default)")
-		chDir        = flag.String("C", "", "change to directory before running")
 	)
 
 	//goland:noinspection GoUnhandledErrorResult
@@ -34,17 +34,14 @@ func main() {
 	}
 	flag.Parse()
 
-	// Change directory if requested.
-	if *chDir != "" {
-		if err := os.Chdir(*chDir); err != nil {
-			fmt.Fprintf(os.Stderr, "error: cannot change directory to %s: %v\n", *chDir, err)
-			os.Exit(1)
-		}
-	}
-
 	root := "."
 	if flag.NArg() > 0 {
 		root = flag.Arg(0)
+	}
+
+	// Resolve to absolute path for display and cache keying.
+	if absRoot, err := filepath.Abs(root); err == nil {
+		root = absRoot
 	}
 
 	// Set log level and quiet mode.
@@ -57,6 +54,12 @@ func main() {
 		quietMode = true
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
+	if *hardlink && !*dryRun {
+		fmt.Fprintf(os.Stderr, "WARNING: --hardlink mode creates hard links instead of reflinks.\n")
+		fmt.Fprintf(os.Stderr, "  Hard-linked files share the same inode — editing one file changes ALL copies.\n")
+		fmt.Fprintf(os.Stderr, "  Metadata (permissions, timestamps) is also shared. Use with caution.\n\n")
+	}
 
 	fmtSize := func(b int64) string {
 		return formatSize(b, *rawSizes)
@@ -74,7 +77,7 @@ func main() {
 
 	// === Pass 1: Survey file sizes ===
 	if !*quiet {
-		fmt.Fprintf(os.Stderr, "Pass 1: Scanning file sizes...\n")
+		fmt.Fprintf(os.Stderr, "Pass 1: Scanning file sizes in %s\n", root)
 	}
 	sm := NewSizeMap(*maxSizes)
 	var filenameHashes map[int64]uint64
@@ -151,7 +154,7 @@ func main() {
 			fmtSize(size), formatCount(int64(len(paths))))
 
 		step := max(1, len(paths)/200)
-		stats := ProcessSizeGroup(paths, size, *dryRun, *verbose, *rawSizes, func(current int) {
+		stats := ProcessSizeGroup(paths, size, *dryRun, *verbose, *rawSizes, *hardlink, func(current int) {
 			if current%step == 0 || current == len(paths) {
 				printProgressBar(prefix, current, len(paths), "")
 			}
@@ -361,8 +364,8 @@ func main() {
 		}
 	}
 
-	// Update dedup cache (skip on dry-run since no actual dedup happened).
-	if cacheFile != "" && !*dryRun {
+	// Update dedup cache (skip on dry-run and when errors occurred).
+	if cacheFile != "" && !*dryRun && totalStats.Errors == 0 {
 		for _, t := range originalTargets {
 			cached[t.Size] = filenameHashes[t.Size]
 		}

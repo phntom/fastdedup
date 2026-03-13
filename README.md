@@ -1,11 +1,11 @@
 # fastdedup
 
-Deduplicate millions of files on btrfs in seconds using reflinks. Zero extra disk space, no data copying — just instant copy-on-write deduplication.
+Deduplicate millions of files in seconds using reflinks. Zero extra disk space, no data copying — just instant copy-on-write deduplication. Optimized for btrfs, also works on XFS and ZFS.
 
 ```
 $ fastdedup /srv/backups
 
-Pass 1: Scanning file sizes...
+Pass 1: Scanning file sizes in /srv/backups
   Scanned 8,860,298 files, 571,197 unique sizes
 
 Top file sizes by potential savings:
@@ -31,9 +31,22 @@ Pass 2: Deduplicating:
 ## How it works
 
 1. **Pass 1** — scans the directory tree and counts files by size, ranking by potential savings
-2. **Pass 2** — for each target size, scans for matching files and replaces duplicates with btrfs reflinks (use `--batch` to collect all sizes in one pass for speed at the cost of memory)
+2. **Pass 2** — for each target size, scans for matching files and replaces duplicates with reflinks (use `--batch` to collect all sizes in one pass for speed at the cost of memory)
 
 Reflinks are instant — the filesystem shares the underlying data blocks between files. Each file remains independent (copy-on-write), so modifying one won't affect others.
+
+## Supported filesystems
+
+fastdedup uses the `FICLONE` ioctl to create reflinks. Any Linux filesystem that supports reflinks will work.
+
+| Filesystem | Reflinks | Extent detection | Notes |
+|---|---|---|---|
+| **btrfs** | yes | yes (FIEMAP) | Full support — fastest with extent-based skip of already-deduped files |
+| **XFS** | yes | yes (FIEMAP) | Requires `reflink=1` (default since mkfs.xfs 5.1) |
+| **ZFS** | yes | no | Requires OpenZFS 2.2+ with `block_cloning` enabled |
+| **ext4, others** | no | — | `--dry-run` works for analysis, but actual dedup requires reflink support |
+
+On filesystems without FIEMAP (like ZFS), fastdedup falls back to byte-by-byte content comparison. This is slightly slower than the extent-based approach on btrfs/XFS but produces identical results.
 
 ## Installation
 
@@ -91,10 +104,26 @@ fastdedup [flags] [directory]
 | `-q` | false | Quiet mode — only print final summary (for cronjobs) |
 | `--batch` | false | Collect all target files in one pass (faster, uses more memory) |
 | `--low-memory` | false | Scan separately for each file size (lowest memory, slower) |
-| `--no-cache` | false | Disable the dedup cache — always process all sizes |
+| `--no-cache` | false | Reprocess all file sizes even if unchanged since last run |
+| `--hardlink` | false | Use hard links instead of reflinks (works on any filesystem — see warning below) |
 | `--snapshots` | false | Include `.snapshots` directories (skipped by default) |
 | `--raw-sizes` | false | Show raw byte counts instead of human-readable |
-| `-C` | | Change to directory before running |
+
+### Hard link mode
+
+`--hardlink` works on any Linux filesystem, but comes with important trade-offs compared to reflinks:
+
+- **Editing one file changes all copies** — hard-linked files share the same inode, so there is no copy-on-write isolation
+- **Metadata is shared** — permissions, ownership, and timestamps are the same for all linked files
+- **Deleting one copy does not free space** — the data remains until the last link is removed
+
+Use `--dry-run --hardlink` first to see what would be linked. Only use this mode if you understand the implications.
+
+### Remembering previous runs
+
+By default, fastdedup saves a small fingerprint of each processed file size group to `~/.cache/fastdedup/`. On the next run over the same directory, it skips groups where the set of filenames hasn't changed — meaning no files were added, removed, or renamed. This makes repeated runs over large directories nearly instant when little has changed.
+
+Use `--no-cache` to ignore saved state and reprocess everything.
 
 ## Building from source
 
@@ -124,6 +153,13 @@ To publish on GitHub after running the release script:
 ```bash
 git push origin v<version>
 gh release create v<version> release/<version>/* --title 'v<version>' --notes-file release/<version>/description.md
+```
+
+## Testing
+
+```bash
+go run ./cmd/testdedup                        # test on default /tmp
+go run ./cmd/testdedup -dir /mnt/btrfs        # test on a specific filesystem
 ```
 
 ## Supported architectures

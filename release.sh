@@ -103,8 +103,9 @@ go mod vendor
 rm -f "${NAME}"
 
 # Save original debian files (will be modified per-series)
-cp debian/control debian/control.orig
-cp debian/rules debian/rules.orig
+# Stored outside debian/ because dh_clean removes .orig files in debian/.
+cp debian/control "${RELEASE_DIR}/control.saved"
+cp debian/rules "${RELEASE_DIR}/rules.saved"
 
 # Download Go toolchain for bundled-Go series (if any)
 needs_bundled=false
@@ -190,8 +191,8 @@ RULES
     chmod +x debian/rules
   else
     # Restore original debian files for series with system Go
-    cp debian/control.orig debian/control
-    cp debian/rules.orig debian/rules
+    cp "${RELEASE_DIR}/control.saved" debian/control
+    cp "${RELEASE_DIR}/rules.saved" debian/rules
     rm -rf _go
   fi
 
@@ -215,9 +216,9 @@ CHLOG
 done
 
 # Restore original debian files and clean up
-cp debian/control.orig debian/control
-cp debian/rules.orig debian/rules
-rm -f debian/control.orig debian/rules.orig
+cp "${RELEASE_DIR}/control.saved" debian/control
+cp "${RELEASE_DIR}/rules.saved" debian/rules
+rm -f "${RELEASE_DIR}/control.saved" "${RELEASE_DIR}/rules.saved"
 rm -rf _go
 
 # Restore changelog to first non-bundled series (or first series)

@@ -143,17 +143,40 @@ func main() {
 		_ = saveMeta(mFile, &ScanMeta{FileCount: fileCount})
 	}
 
-	// Select top N most impactful sizes.
-	targets := sm.TopN(*topN)
+	// Select top N most impactful sizes, excluding cached (unchanged) groups.
+	// Cached sizes are filtered before applying the -top limit so that
+	// subsequent runs still process the requested number of entries.
+	allCandidates := sm.TopN(sm.Len())
+	var targets []SizeEntry
+	var skippedCached int64
+	for _, t := range allCandidates {
+		if cached != nil {
+			if h, ok := cached[t.Size]; ok && h == filenameHashes[t.Size] {
+				skippedCached++
+				continue
+			}
+		}
+		if len(targets) < *topN {
+			targets = append(targets, t)
+		}
+	}
+
 	if len(targets) == 0 {
 		if !*quiet {
-			fmt.Fprintf(os.Stderr, "\nNo duplicate file sizes found.\n")
+			if skippedCached > 0 {
+				fmt.Fprintf(os.Stderr, "\nNo new duplicate file sizes found (%s cached).\n", formatCount(skippedCached))
+			} else {
+				fmt.Fprintf(os.Stderr, "\nNo duplicate file sizes found.\n")
+			}
 		}
 		return
 	}
 
 	// Display top sizes table.
 	if !*quiet {
+		if skippedCached > 0 {
+			fmt.Fprintf(os.Stderr, "  Skipped %s unchanged size groups (cached)\n", formatCount(skippedCached))
+		}
 		fmt.Fprintf(os.Stderr, "\nTop file sizes by potential savings:\n")
 		tableCount := min(20, len(targets))
 		fmt.Fprintf(os.Stderr, "  %4s  %10s  %8s  %10s\n", "#", "Size", "Count", "Savings")
@@ -173,24 +196,6 @@ func main() {
 		}
 		fmt.Fprintf(os.Stderr, "  %4s  %10s  %8s  %10s\n",
 			"", "", formatCount(totalTargetFiles), fmtSize(totalTargetSavings))
-	}
-
-	// Filter out size groups unchanged since last run.
-	originalTargets := targets
-	if cached != nil {
-		var active []SizeEntry
-		var skipped int64
-		for _, t := range targets {
-			if h, ok := cached[t.Size]; ok && h == filenameHashes[t.Size] {
-				skipped++
-			} else {
-				active = append(active, t)
-			}
-		}
-		if skipped > 0 && !*quiet {
-			fmt.Fprintf(os.Stderr, "  Skipped %s unchanged size groups (cached)\n", formatCount(skipped))
-		}
-		targets = active
 	}
 
 	// === Pass 2: Deduplicate ===
@@ -454,9 +459,17 @@ func main() {
 
 	// Update dedup cache (skip on dry-run; exclude size groups that had errors).
 	if cacheFile != "" && !*dryRun {
-		for _, t := range originalTargets {
+		for _, t := range targets {
 			if !errorSizes[t.Size] {
 				cached[t.Size] = filenameHashes[t.Size]
+			}
+		}
+		// Prune stale cache entries for sizes no longer present on disk.
+		if filenameHashes != nil {
+			for size := range cached {
+				if _, exists := filenameHashes[size]; !exists {
+					delete(cached, size)
+				}
 			}
 		}
 		if err := saveCache(cacheFile, cached); err != nil {

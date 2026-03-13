@@ -4,7 +4,7 @@ set -euo pipefail
 VERSION="${1:?Usage: $0 <version>}"
 RELEASE_DIR="release/${VERSION}"
 NAME="fastdedup"
-DESC="Fast file deduplication for btrfs using reflinks"
+DESC="Fast file deduplication using reflinks (btrfs, XFS, ZFS)"
 ARCHES=(amd64 arm64 386 arm riscv64 ppc64le s390x mips64le)
 MAINTAINER="PHANTOm <phantom@kix.co.il>"
 GPG_KEY="B2BE8C2EBFB7AAC6572E933C779CD5498B743A1B"

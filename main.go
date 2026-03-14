@@ -508,6 +508,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  Errors:           %s\n", formatCount(totalStats.Errors))
 	}
 
+	// Send webhook notifications.
+	if url := os.Getenv("FASTDEDUP_WEBHOOK_UPDATES"); url != "" {
+		notifyUpdate(url, root, totalStats, elapsed, *dryRun)
+	}
+	if url := os.Getenv("FASTDEDUP_WEBHOOK_ALERTS"); url != "" && totalStats.Errors > 0 {
+		notifyAlert(url, root, totalStats)
+	}
+	if url := os.Getenv("FASTDEDUP_HEALTHCHECK_URL"); url != "" {
+		pingHealthcheck(url)
+	}
+
 	if totalStats.Errors > 0 {
 		os.Exit(1)
 	}

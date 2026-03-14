@@ -17,8 +17,23 @@ MOUNTPOINTS=""
 # Uncomment to override:
 # MIN_SIZE=524288
 
+# Log file for cron output (set to empty to disable file logging)
+LOG_FILE="/var/log/fastdedup.log"
+
 # Disable the file hash cache (reprocess all sizes every run)
 # export FASTDEDUP_NO_CACHE=1
 
 # Disable the anonymized error report file (~/.cache/fastdedup/report.txt)
 # export FASTDEDUP_NO_REPORT_FILE=1
+
+# Slack/Mattermost webhook for run summaries (optional)
+# export FASTDEDUP_WEBHOOK_UPDATES=https://mattermost.example.com/hooks/xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Slack/Mattermost webhook for critical alerts requiring intervention (optional)
+# export FASTDEDUP_WEBHOOK_ALERTS=https://mattermost.example.com/hooks/xxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+# Override machine identifier in webhook messages (default: hostname)
+# export FASTDEDUP_HOST_ID=my-server-01
+
+# Healthchecks.io dead man's switch — pinged via GET after each successful run
+# export FASTDEDUP_HEALTHCHECK_URL=https://hc-ping.com/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx

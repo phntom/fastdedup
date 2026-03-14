@@ -36,6 +36,7 @@ type DedupStats struct {
 	FilesDeduped   int64
 	AlreadyDeduped int64
 	Errors         int64
+	ErrorDetails   []DedupError
 }
 
 // fileRef is a reference file representing a unique content group within a size class.
@@ -97,6 +98,8 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 		deduped := false
 		contentMatch := false
 		dedupErrors := 0
+		var firstDedupErr error
+		var firstRefPath string
 		for _, ref := range refs {
 			// Same inode (hard link) — already sharing storage.
 			if same, _ := sameInode(ref.path, path); same {
@@ -149,6 +152,10 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 				dedupErr = dedupFile(ref.path, path, fixPerms)
 			}
 			if dedupErr != nil {
+				if firstDedupErr == nil {
+					firstDedupErr = dedupErr
+					firstRefPath = ref.path
+				}
 				slog.Debug("dedup failed, trying next ref", "src", ref.path, "dst", path, "error", dedupErr)
 				dedupErrors++
 				continue // try next ref — another ref with same content may work
@@ -170,6 +177,19 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 				// Add this file as an alternative ref — it may succeed as
 				// source where the original ref could not.
 				stats.Errors++
+				if firstDedupErr != nil {
+					mode := "reflink"
+					if hardlink {
+						mode = "hardlink"
+					}
+					stats.ErrorDetails = append(stats.ErrorDetails, DedupError{
+						Size:    size,
+						Mode:    mode,
+						Err:     firstDedupErr.Error(),
+						SrcPath: firstRefPath,
+						DstPath: path,
+					})
+				}
 				slog.Debug("all dedup attempts failed for content match, adding as alternative ref",
 					"path", path, "attempts", dedupErrors)
 			}

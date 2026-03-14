@@ -84,7 +84,7 @@ func main() {
 	// Load dedup cache.
 	var cacheFile string
 	var cached map[int64]uint64
-	if !*noCache {
+	if !*noCache && os.Getenv("FASTDEDUP_NO_CACHE") == "" {
 		if cf, err := cachePath(root); err == nil {
 			cacheFile = cf
 			cached = loadCache(cf)
@@ -257,6 +257,7 @@ func main() {
 		totalStats.FilesDeduped += stats.FilesDeduped
 		totalStats.AlreadyDeduped += stats.AlreadyDeduped
 		totalStats.Errors += stats.Errors
+		totalStats.ErrorDetails = append(totalStats.ErrorDetails, stats.ErrorDetails...)
 		if stats.Errors > 0 {
 			errorSizes[size] = true
 		}
@@ -474,6 +475,15 @@ func main() {
 		}
 		if err := saveCache(cacheFile, cached); err != nil {
 			slog.Debug("failed to save cache", "error", err)
+		}
+	}
+
+	// Write anonymized error report (unless disabled).
+	if os.Getenv("FASTDEDUP_NO_REPORT_FILE") == "" && len(totalStats.ErrorDetails) > 0 && !*dryRun {
+		if rf, err := reportFilePath(); err == nil {
+			if err := appendReport(rf, totalStats.ErrorDetails, version); err != nil {
+				slog.Debug("failed to write error report", "error", err)
+			}
 		}
 	}
 

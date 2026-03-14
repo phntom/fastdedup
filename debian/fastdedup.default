@@ -16,3 +16,9 @@ MOUNTPOINTS=""
 # Minimum file size in bytes (default: 524288 = 512 KiB)
 # Uncomment to override:
 # MIN_SIZE=524288
+
+# Disable the file hash cache (reprocess all sizes every run)
+# export FASTDEDUP_NO_CACHE=1
+
+# Disable the anonymized error report file (~/.cache/fastdedup/report.txt)
+# export FASTDEDUP_NO_REPORT_FILE=1

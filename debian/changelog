@@ -1,5 +1,5 @@
-fastdedup (0.0.5~ppa1~jammy) jammy; urgency=low
+fastdedup (0.0.8~ppa1~jammy) jammy; urgency=low
 
-  * Release v0.0.5
+  * Release v0.0.8
 
- -- PHANTOm <phantom@kix.co.il>  Fri, 13 Mar 2026 18:59:53 +0200
+ -- PHANTOm <phantom@kix.co.il>  Sat, 14 Mar 2026 10:24:52 +0200

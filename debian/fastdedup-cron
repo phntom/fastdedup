@@ -40,12 +40,23 @@ EXTRA_OPTS=""
 if [ -n "$MIN_SIZE" ]; then
     EXTRA_OPTS="$EXTRA_OPTS --min-size=$MIN_SIZE"
 fi
+if [ -n "$MAX_TIME" ]; then
+    EXTRA_OPTS="$EXTRA_OPTS --max-time=$MAX_TIME"
+fi
 
 # Deduplicate each mount point, logging output
 for mp in $MOUNTPOINTS; do
+    # Add --scrub/--defrag only for btrfs mount points
+    MP_OPTS=""
+    mp_fstype=$(findmnt -rn -o FSTYPE "$mp" 2>/dev/null || true)
+    if [ "$mp_fstype" = "btrfs" ]; then
+        [ "$SCRUB" = "yes" ] && MP_OPTS="$MP_OPTS --scrub"
+        [ "$DEFRAG" = "yes" ] && MP_OPTS="$MP_OPTS --defrag"
+    fi
+
     if [ -n "$LOG_FILE" ]; then
-        /usr/bin/fastdedup $OPTIONS $EXTRA_OPTS "$mp" 2>>"$LOG_FILE" || true
+        /usr/bin/fastdedup $OPTIONS $EXTRA_OPTS $MP_OPTS "$mp" 2>>"$LOG_FILE" || true
     else
-        /usr/bin/fastdedup $OPTIONS $EXTRA_OPTS "$mp" || true
+        /usr/bin/fastdedup $OPTIONS $EXTRA_OPTS $MP_OPTS "$mp" || true
     fi
 done

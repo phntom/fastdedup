@@ -68,8 +68,8 @@ func TestFormatETA(t *testing.T) {
 	tests := []struct {
 		name    string
 		elapsed time.Duration
-		current int
-		total   int
+		current int64
+		total   int64
 		want    string
 	}{
 		{"half done 10s", 10 * time.Second, 50, 100, "~10s"},
@@ -80,6 +80,7 @@ func TestFormatETA(t *testing.T) {
 		{"zero total", time.Second, 50, 0, ""},
 		{"current exceeds total", time.Second, 101, 100, ""},
 		{"done", time.Second, 100, 100, "~0s"},
+		{"large values 32bit safe", 10 * time.Second, 5_000_000_000, 10_000_000_000, "~10s"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

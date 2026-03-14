@@ -127,6 +127,16 @@ MOUNTPOINTS=""
 # Log file for cron output (rotated by logrotate)
 LOG_FILE="/var/log/fastdedup.log"
 
+# Maximum time to spend deduplicating (e.g. 23h, 6h, 30m)
+# Useful for daily cron to ensure completion before the next run
+# MAX_TIME=""
+
+# Run btrfs scrub after dedup completes (btrfs mount points only)
+# SCRUB=yes
+
+# Run btrfs defragment after dedup/scrub completes (btrfs mount points only)
+# DEFRAG=yes
+
 # Disable the dedup cache (reprocess everything each run)
 # export FASTDEDUP_NO_CACHE=1
 
@@ -169,6 +179,9 @@ fastdedup [flags] [directory]
 | `--hardlink` | false | Use hard links instead of reflinks (works on any filesystem — see warning below) |
 | `--fix-perms` | false | Temporarily add write permission to read-only directories during dedup, then restore |
 | `--snapshots` | false | Include `.snapshots` directories (skipped by default) |
+| `--max-time` | | Stop deduplication gracefully after duration (e.g. `30m`, `2h`, `23h`). Does not affect `--scrub` or `--defrag`. |
+| `--scrub` | false | Run `btrfs scrub` after dedup completes (requires root, btrfs only) |
+| `--defrag` | false | Run `btrfs defragment` after dedup/scrub completes (requires root, btrfs only) |
 | `--raw-sizes` | false | Show raw byte counts instead of human-readable |
 | `--version` | false | Print version and exit |
 

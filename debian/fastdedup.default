@@ -20,6 +20,18 @@ MOUNTPOINTS=""
 # Log file for cron output (set to empty to disable file logging)
 LOG_FILE="/var/log/fastdedup.log"
 
+# Maximum time to spend deduplicating (e.g. 23h, 6h, 30m)
+# Useful for daily cron to ensure completion before the next run
+# MAX_TIME=""
+
+# Run btrfs scrub after dedup completes (requires btrfs, runs as root)
+# Set to "yes" to enable — only applies to btrfs mount points
+# SCRUB=no
+
+# Run btrfs defragment after dedup/scrub completes (requires btrfs, runs as root)
+# Set to "yes" to enable — only applies to btrfs mount points
+# DEFRAG=no
+
 # Disable the file hash cache (reprocess all sizes every run)
 # export FASTDEDUP_NO_CACHE=1
 

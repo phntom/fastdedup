@@ -17,6 +17,7 @@ func main() {
 		maxSizes     = flag.Int("max-sizes", 1_000_000, "maximum unique file sizes to track in pass 1")
 		topN         = flag.Int("top", 10_000, "number of most impactful file sizes to dedup in pass 2")
 		minSize      = flag.Int64("min-size", 524288, "minimum file size to process in bytes")
+		maxTime      = flag.String("max-time", "", "stop gracefully after duration (e.g. 30m, 2h, 1h30m)")
 		dryRun       = flag.Bool("dry-run", false, "report what would be deduped without making changes")
 		verbose      = flag.Bool("v", false, "show file paths of deduped files and detailed diagnostics")
 		quiet        = flag.Bool("q", false, "quiet mode — only print final summary (for cronjobs)")
@@ -28,6 +29,8 @@ func main() {
 		fixPerms     = flag.Bool("fix-perms", false, "temporarily add write permission to read-only directories during dedup, then restore")
 		rawSizes     = flag.Bool("raw-sizes", false, "show raw byte counts instead of human-readable")
 		snapshots    = flag.Bool("snapshots", false, "include .snapshots directories (skipped by default)")
+		scrub        = flag.Bool("scrub", false, "run btrfs scrub after dedup completes (requires root, btrfs only)")
+		defrag       = flag.Bool("defrag", false, "run btrfs defragment after dedup/scrub (requires root, btrfs only)")
 		showVersion  = flag.Bool("version", false, "print version and exit")
 	)
 
@@ -68,6 +71,29 @@ func main() {
 		quietMode = true
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
+	// Parse --max-time deadline.
+	var deadline time.Time
+	if *maxTime != "" {
+		d, err := time.ParseDuration(*maxTime)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid --max-time %q: %v\n", *maxTime, err)
+			os.Exit(1)
+		}
+		deadline = time.Now().Add(d)
+	}
+
+	// Validate --scrub / --defrag requirements early.
+	if *scrub || *defrag {
+		if os.Geteuid() != 0 {
+			fmt.Fprintf(os.Stderr, "error: --scrub and --defrag require root permissions\n")
+			os.Exit(1)
+		}
+		if !isBtrfs(root) {
+			fmt.Fprintf(os.Stderr, "error: --scrub and --defrag require a btrfs filesystem (detected non-btrfs at %s)\n", root)
+			os.Exit(1)
+		}
+	}
 
 	startTime := time.Now()
 
@@ -143,13 +169,13 @@ func main() {
 				elapsed := now.Sub(scanStart)
 				rate := int64(float64(scanCount) / elapsed.Seconds())
 				if estimatedFiles > 0 {
-					eta := formatETA(elapsed, int(scanCount), int(estimatedFiles))
+					eta := formatETA(elapsed, scanCount, estimatedFiles)
 					suffix := fmt.Sprintf("%s/s %s", formatCount(rate), eta)
-					printProgressBar("  Scanning:", int(scanCount), int(estimatedFiles), suffix)
+					printProgressBar("  Scanning:", scanCount, estimatedFiles, suffix)
 				} else if estimatedBytes > 0 {
-					eta := formatETA(elapsed, int(scanBytes), int(estimatedBytes))
+					eta := formatETA(elapsed, scanBytes, estimatedBytes)
 					suffix := fmt.Sprintf("%s / %s %s", formatSize(scanBytes, false), formatSize(estimatedBytes, false), eta)
-					printProgressBar("  Scanning:", int(scanBytes), int(estimatedBytes), suffix)
+					printProgressBar("  Scanning:", scanBytes, estimatedBytes, suffix)
 				} else {
 					printStatus(fmt.Sprintf("  Scanned: %s (%s/s)", formatCount(scanCount), formatCount(rate)))
 				}
@@ -238,7 +264,12 @@ func main() {
 
 	var filesProcessed int64 // cumulative files across all groups
 	var noDupGroups int64    // groups where no action was taken
+	var timeLimitHit bool    // set when --max-time deadline is reached
 	dedupStart := time.Now()
+
+	timeExpired := func() bool {
+		return !deadline.IsZero() && time.Now().After(deadline)
+	}
 
 	// processGroup deduplicates one size group and accumulates stats.
 	processGroup := func(idx, total int, size int64, paths []string) {
@@ -251,11 +282,11 @@ func main() {
 		groupBase := filesProcessed
 		stats := ProcessSizeGroup(paths, size, *dryRun, *verbose, *rawSizes, *hardlink, *fixPerms, func(current int) {
 			if current%step == 0 || current == len(paths) {
-				overall := int(groupBase + int64(current))
-				eta := formatETA(time.Since(dedupStart), overall, int(expectedFiles))
-				overallPct := overall * 100 / int(expectedFiles)
+				overall := groupBase + int64(current)
+				eta := formatETA(time.Since(dedupStart), overall, expectedFiles)
+				overallPct := overall * 100 / expectedFiles
 				suffix := fmt.Sprintf("(%d%%) %s", overallPct, eta)
-				printProgressBar(prefix, current, len(paths), suffix)
+				printProgressBar(prefix, int64(current), int64(len(paths)), suffix)
 			}
 		})
 		filesProcessed += int64(len(paths))
@@ -318,8 +349,8 @@ func main() {
 				now := time.Now()
 				if now.Sub(lastCollectUpdate) >= 200*time.Millisecond {
 					lastCollectUpdate = now
-					eta := formatETA(now.Sub(collectStart), int(collectCount), int(expectedFiles))
-					printProgressBar("  Collecting:", int(collectCount), int(expectedFiles), eta)
+					eta := formatETA(now.Sub(collectStart), collectCount, expectedFiles)
+					printProgressBar("  Collecting:", collectCount, expectedFiles, eta)
 				}
 			}
 		})
@@ -339,12 +370,20 @@ func main() {
 			if len(paths) >= 2 {
 				toProcess = append(toProcess, processEntry{t.Size, paths})
 				totalFiles += int64(len(paths))
+			} else if cacheFile != "" && !*dryRun {
+				// No duplicates for this size — cache to skip on next run.
+				cached[t.Size] = filenameHashes[t.Size]
 			}
 		}
 		finishLine(fmt.Sprintf("  Collected %s files in %s size groups",
 			formatCount(totalFiles), formatCount(int64(len(toProcess)))))
 
 		if len(toProcess) == 0 {
+			if cacheFile != "" && !*dryRun {
+				if err := saveCache(cacheFile, cached); err != nil {
+					slog.Debug("failed to save cache", "error", err)
+				}
+			}
 			if !*quiet {
 				fmt.Fprintf(os.Stderr, "\nNo files to deduplicate.\n")
 			}
@@ -361,6 +400,11 @@ func main() {
 		}
 
 		for i, entry := range toProcess {
+			if timeExpired() {
+				timeLimitHit = true
+				finishLine("  Time limit reached, stopping gracefully")
+				break
+			}
 			processGroup(i, len(toProcess), entry.size, ExpandPaths(entry.paths))
 		}
 	} else if *lowMemory {
@@ -375,6 +419,11 @@ func main() {
 		}
 
 		for i, t := range targets {
+			if timeExpired() {
+				timeLimitHit = true
+				finishLine("  Time limit reached, stopping gracefully")
+				break
+			}
 			singleSet := map[int64]struct{}{t.Size: {}}
 			collected, err := CollectFiles(root, singleSet, *snapshots, *minSize, dirPool, nil)
 			if err != nil {
@@ -383,130 +432,211 @@ func main() {
 			}
 			paths := collected[t.Size]
 			if len(paths) < 2 {
+				if cacheFile != "" && !*dryRun {
+					cached[t.Size] = filenameHashes[t.Size]
+				}
 				continue
 			}
 			processGroup(i, len(targets), t.Size, ExpandPaths(paths))
 		}
 	} else {
-		// Default: bounded collection with automatic eviction for large groups.
-		if !*quiet {
-			fmt.Fprintf(os.Stderr, "\nPass 2: Collecting target files...\n")
-		}
-		targetSet := make(map[int64]struct{}, len(targets))
-		for _, t := range targets {
-			targetSet[t.Size] = struct{}{}
-		}
-
+		// Default: wave-based collection. Fill memory up to budget, process
+		// cached groups, free memory, refill with remaining groups, repeat.
+		// Groups too large to ever fit get processed last via per-size scan.
 		type cachedGroup struct {
 			paths   []CompactPath
 			memUsed int64
 		}
-		cache := make(map[int64]*cachedGroup)
-		evicted := make(map[int64]bool)
-		var totalMem int64
 		memBudget := *memBudgetMB * 1024 * 1024
-
-		var collectCount int64
-		defaultCollectStart := time.Now()
-		lastDefaultCollectUpdate := defaultCollectStart
-		_ = walkRandom(root, *snapshots, *minSize, func(path string, size int64) {
-			if _, ok := targetSet[size]; !ok {
-				return
-			}
-			if evicted[size] {
-				return
-			}
-
-			collectCount++
-			if collectCount%100 == 0 {
-				now := time.Now()
-				if now.Sub(lastDefaultCollectUpdate) >= 200*time.Millisecond {
-					lastDefaultCollectUpdate = now
-					eta := formatETA(now.Sub(defaultCollectStart), int(collectCount), int(expectedFiles))
-					printProgressBar("  Collecting:", int(collectCount), int(expectedFiles), eta)
-				}
-			}
-
-			dir, name := filepath.Dir(path), filepath.Base(path)
-			iDir, dirCost := dirPool.Intern(dir)
-			cp := CompactPath{Dir: iDir, Name: name}
-			pathMem := cp.MemCost() // per-entry cost (shared Dir excluded)
-			totalMem += dirCost     // count new directory strings against budget
-
-			g, ok := cache[size]
-			if !ok {
-				g = &cachedGroup{}
-				cache[size] = g
-			}
-			g.paths = append(g.paths, cp)
-			g.memUsed += pathMem
-			totalMem += pathMem
-
-			// Evict the most memory-costly group when over budget.
-			for totalMem > memBudget {
-				var maxSize int64
-				var maxMem int64
-				for sz, grp := range cache {
-					if grp.memUsed > maxMem {
-						maxSize = sz
-						maxMem = grp.memUsed
-					}
-				}
-				if maxMem == 0 {
-					break
-				}
-				evicted[maxSize] = true
-				totalMem -= cache[maxSize].memUsed
-				delete(cache, maxSize)
-				slog.Debug("evicted size group from cache", "size", maxSize, "freed", maxMem)
-			}
-		})
-
-		if len(evicted) > 0 {
-			finishLine(fmt.Sprintf("  Collected %s files, %s groups deferred to rescan",
-				formatCount(collectCount), formatCount(int64(len(evicted)))))
-		} else {
-			finishLine(fmt.Sprintf("  Collected %s files", formatCount(collectCount)))
-		}
+		processed := make(map[int64]bool)
+		oversized := make(map[int64]bool)
+		groupsDone := 0
+		totalGroups := len(targets)
 
 		if !*quiet {
 			dryLabel := ""
 			if *dryRun {
 				dryLabel = " (dry run)"
 			}
-			fmt.Fprintf(os.Stderr, "\nDeduplicating%s: %s groups, %s files, up to %s potential savings\n",
-				dryLabel, formatCount(int64(len(targets))), formatCount(expectedFiles), fmtSize(expectedSavings))
+			fmt.Fprintf(os.Stderr, "\nPass 2: Deduplicating%s: %s groups, %s files, up to %s potential savings\n",
+				dryLabel, formatCount(int64(totalGroups)), formatCount(expectedFiles), fmtSize(expectedSavings))
 		}
 
-		for i, t := range targets {
-			var compact []CompactPath
-			if g, ok := cache[t.Size]; ok {
-				compact = g.paths
-				delete(cache, t.Size) // free memory as we go
-			} else {
-				// Evicted or not found — do a per-size walk.
-				singleSet := map[int64]struct{}{t.Size: {}}
-				c, err := CollectFiles(root, singleSet, *snapshots, *minSize, dirPool, nil)
-				if err != nil {
-					slog.Debug("collection failed", "size", t.Size, "error", err)
+		for wave := 1; ; wave++ {
+			if timeExpired() {
+				timeLimitHit = true
+				finishLine("  Time limit reached, stopping gracefully")
+				break
+			}
+
+			// Build set of sizes to collect this wave.
+			collectSet := make(map[int64]struct{})
+			for _, t := range targets {
+				if !processed[t.Size] && !oversized[t.Size] {
+					collectSet[t.Size] = struct{}{}
+				}
+			}
+			if len(collectSet) == 0 {
+				break
+			}
+
+			if wave > 1 && !*quiet {
+				fmt.Fprintf(os.Stderr, "  Wave %d: collecting %s remaining groups...\n", wave, formatCount(int64(len(collectSet))))
+			} else if !*quiet {
+				fmt.Fprintf(os.Stderr, "  Collecting target files...\n")
+			}
+
+			// Collect into memory with eviction.
+			cache := make(map[int64]*cachedGroup)
+			evicted := make(map[int64]bool)
+			var totalMem int64
+			var collectCount int64
+			waveStart := time.Now()
+			lastWaveUpdate := waveStart
+
+			_ = walkRandom(root, *snapshots, *minSize, func(path string, size int64) {
+				if _, ok := collectSet[size]; !ok {
+					return
+				}
+				if evicted[size] {
+					return
+				}
+
+				collectCount++
+				if collectCount%100 == 0 {
+					now := time.Now()
+					if now.Sub(lastWaveUpdate) >= 200*time.Millisecond {
+						lastWaveUpdate = now
+						eta := formatETA(now.Sub(waveStart), collectCount, expectedFiles)
+						printProgressBar("  Collecting:", collectCount, expectedFiles, eta)
+					}
+				}
+
+				dir, name := filepath.Dir(path), filepath.Base(path)
+				iDir, dirCost := dirPool.Intern(dir)
+				cp := CompactPath{Dir: iDir, Name: name}
+				pathMem := cp.MemCost()
+				totalMem += dirCost
+
+				g, ok := cache[size]
+				if !ok {
+					g = &cachedGroup{}
+					cache[size] = g
+				}
+				g.paths = append(g.paths, cp)
+				g.memUsed += pathMem
+				totalMem += pathMem
+
+				// Evict the most memory-costly group when over budget.
+				for totalMem > memBudget {
+					var maxSize int64
+					var maxMem int64
+					for sz, grp := range cache {
+						if grp.memUsed > maxMem {
+							maxSize = sz
+							maxMem = grp.memUsed
+						}
+					}
+					if maxMem == 0 {
+						break
+					}
+					evicted[maxSize] = true
+					totalMem -= cache[maxSize].memUsed
+					delete(cache, maxSize)
+					slog.Debug("evicted size group from cache", "size", maxSize, "freed", maxMem)
+
+					// If cache is empty after eviction, this group is too large to ever fit.
+					if len(cache) == 0 && totalMem > memBudget {
+						oversized[maxSize] = true
+						delete(evicted, maxSize)
+						totalMem = 0
+						slog.Debug("marked oversized group", "size", maxSize)
+					}
+				}
+			})
+
+			if len(cache) == 0 {
+				finishLine(fmt.Sprintf("  Wave %d: no groups fit in memory", wave))
+				break
+			}
+			finishLine(fmt.Sprintf("  Collected %s groups (%s deferred)",
+				formatCount(int64(len(cache))), formatCount(int64(len(evicted)))))
+
+			// Process cached groups in original priority order.
+			for _, t := range targets {
+				if timeExpired() {
+					timeLimitHit = true
+					finishLine("  Time limit reached, stopping gracefully")
+					break
+				}
+				g, ok := cache[t.Size]
+				if !ok {
 					continue
 				}
-				compact = c[t.Size]
+				delete(cache, t.Size)
+				processed[t.Size] = true
+				if len(g.paths) < 2 {
+					if cacheFile != "" && !*dryRun {
+						cached[t.Size] = filenameHashes[t.Size]
+					}
+					groupsDone++
+					continue
+				}
+				processGroup(groupsDone, totalGroups, t.Size, ExpandPaths(g.paths))
+				groupsDone++
 			}
-			if len(compact) < 2 {
+			if timeLimitHit {
+				break
+			}
+
+			// Check if all non-oversized groups are done.
+			allDone := true
+			for _, t := range targets {
+				if !processed[t.Size] && !oversized[t.Size] {
+					allDone = false
+					break
+				}
+			}
+			if allDone {
+				break
+			}
+		}
+
+		// Process oversized groups last via per-size scan.
+		for _, t := range targets {
+			if !oversized[t.Size] {
 				continue
 			}
-			processGroup(i, len(targets), t.Size, ExpandPaths(compact))
+			if timeLimitHit || timeExpired() {
+				timeLimitHit = true
+				break
+			}
+			slog.Debug("processing oversized group via per-size scan", "size", t.Size)
+			singleSet := map[int64]struct{}{t.Size: {}}
+			c, err := CollectFiles(root, singleSet, *snapshots, *minSize, dirPool, nil)
+			if err != nil {
+				slog.Debug("collection failed", "size", t.Size, "error", err)
+				groupsDone++
+				continue
+			}
+			paths := c[t.Size]
+			if len(paths) < 2 {
+				if cacheFile != "" && !*dryRun {
+					cached[t.Size] = filenameHashes[t.Size]
+				}
+				groupsDone++
+				continue
+			}
+			processGroup(groupsDone, totalGroups, t.Size, ExpandPaths(paths))
+			groupsDone++
 		}
 	}
 
-	// Update dedup cache (skip on dry-run; exclude size groups that had errors).
+	// Save dedup cache (skip on dry-run).
+	// Individual groups are cached incrementally inside processGroup and at
+	// <2-paths skip points above, so this block only prunes stale entries
+	// and does a final save.
 	if cacheFile != "" && !*dryRun {
-		for _, t := range targets {
-			if !errorSizes[t.Size] {
-				cached[t.Size] = filenameHashes[t.Size]
-			}
-		}
 		// Prune stale cache entries for sizes no longer present on disk.
 		if filenameHashes != nil {
 			for size := range cached {
@@ -559,6 +689,20 @@ func main() {
 	}
 	if url := os.Getenv("FASTDEDUP_HEALTHCHECK_URL"); url != "" {
 		pingHealthcheck(url)
+	}
+
+	// Post-dedup btrfs maintenance (order: scrub first, then defrag).
+	if *scrub && !*dryRun {
+		if err := runScrub(root); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if *defrag && !*dryRun {
+		if err := runDefrag(root, fileCount); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	if totalStats.Errors > 0 {

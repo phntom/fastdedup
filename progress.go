@@ -66,12 +66,12 @@ func formatCount(n int64) string {
 }
 
 // printProgressBar renders a progress bar on stderr, overwriting the current line.
-func printProgressBar(prefix string, current, total int, suffix string) {
+func printProgressBar(prefix string, current, total int64, suffix string) {
 	if quietMode || !isTTY || total <= 0 {
 		return
 	}
 	pct := current * 100 / total
-	filled := barWidth * current / total
+	filled := int(barWidth * current / total)
 	if filled > barWidth {
 		filled = barWidth
 	}
@@ -96,7 +96,7 @@ func printStatus(msg string) {
 }
 
 // formatETA returns a compact time estimate string like "1.5m", "30s", "2.3h".
-func formatETA(elapsed time.Duration, current, total int) string {
+func formatETA(elapsed time.Duration, current, total int64) string {
 	if current <= 0 || total <= 0 || current > total {
 		return ""
 	}

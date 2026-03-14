@@ -36,3 +36,19 @@ func sameInode(_, _ string) (bool, error) {
 func restoreMetadata(_ string, _ os.FileInfo) error {
 	return errUnsupported
 }
+
+func fsUsedBytes(_ string) int64 {
+	return 0
+}
+
+func isBtrfs(_ string) bool {
+	return false
+}
+
+func runScrub(_ string) error {
+	return errUnsupported
+}
+
+func runDefrag(_ string, _ int64) error {
+	return errUnsupported
+}

@@ -28,6 +28,13 @@ fi
 
 [ -z "$MOUNTPOINTS" ] && exit 0
 
+# Skip if another instance is already running
+LOCK_FILE="/var/lock/fastdedup.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    exit 0
+fi
+
 # Build extra options
 EXTRA_OPTS=""
 if [ -n "$MIN_SIZE" ]; then

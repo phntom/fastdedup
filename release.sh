@@ -29,6 +29,14 @@ fi
 
 mkdir -p "$RELEASE_DIR"
 
+# ── Run tests ──────────────────────────────────────────────────────
+echo "==> Running unit tests..."
+if ! go test ./...; then
+  echo "ERROR: unit tests failed — aborting release"
+  exit 1
+fi
+echo "    tests passed"
+
 # ── Build binaries ──────────────────────────────────────────────────
 echo "==> Building binaries for ${#ARCHES[@]} architectures..."
 for arch in "${ARCHES[@]}"; do
@@ -101,17 +109,9 @@ for variant in daily weekly; do
   rm -rf "$STAGING"
 done
 
-# ── Tag ─────────────────────────────────────────────────────────────
-if git rev-parse "v${VERSION}" &>/dev/null; then
-  echo "==> Tag v${VERSION} already exists, skipping"
-else
-  echo "==> Tagging v${VERSION}"
-  git tag -a "v${VERSION}" -m "Release v${VERSION}"
-fi
-
 # ── Ubuntu PPA ──────────────────────────────────────────────────────
 echo ""
-echo "==> Building and uploading Ubuntu PPA source packages..."
+echo "==> Building Ubuntu PPA source packages..."
 
 # Ensure dput and debuild are available
 for cmd in dput debuild; do
@@ -149,6 +149,7 @@ if $needs_bundled; then
 fi
 
 PPA_REV=1
+PPA_CHANGES_FILES=()
 for series in "${PPA_SERIES[@]}"; do
   PPA_VERSION="${VERSION}~ppa${PPA_REV}~${series}"
 
@@ -251,11 +252,19 @@ CHLOG
   # Clean previous artifacts for this version
   rm -f ../${NAME}_${PPA_VERSION}*
 
-  printf "  %-12s build..." "$series"
-  debuild -S -k"${GPG_KEY}" 2>/dev/null
-  echo " upload..."
-  dput --force "${PPA_TARGET}" "../${NAME}_${PPA_VERSION}_source.changes" 2>/dev/null
-  echo "  ${series} done"
+  printf "  %-12s building..." "$series"
+  if ! debuild -S -k"${GPG_KEY}" 2>/dev/null; then
+    echo " FAILED"
+    # Restore debian files before aborting
+    cp "${RELEASE_DIR}/control.saved" debian/control
+    cp "${RELEASE_DIR}/rules.saved" debian/rules
+    rm -f "${RELEASE_DIR}/control.saved" "${RELEASE_DIR}/rules.saved"
+    rm -rf _go vendor/
+    echo "ERROR: PPA source build failed for ${series} — aborting release"
+    exit 1
+  fi
+  echo " ok"
+  PPA_CHANGES_FILES+=("../${NAME}_${PPA_VERSION}_source.changes")
 done
 
 # Restore original debian files and clean up
@@ -277,14 +286,41 @@ CHLOG
 # Clean up vendor dir (it's gitignored)
 rm -rf vendor/
 
+# ── All builds succeeded — now tag, push, and upload ───────────────
+echo ""
+echo "==> All builds successful. Tagging and uploading..."
+
+# Tag
+if git rev-parse "v${VERSION}" &>/dev/null; then
+  echo "    Tag v${VERSION} already exists, skipping"
+else
+  echo "    Tagging v${VERSION}"
+  git tag -a "v${VERSION}" -m "Release v${VERSION}"
+fi
+
+# Push tag
+echo "    Pushing tag..."
+git push origin "v${VERSION}"
+
+# Upload PPA packages
+echo "    Uploading PPA packages..."
+for changes_file in "${PPA_CHANGES_FILES[@]}"; do
+  series_name=$(basename "$changes_file" | sed 's/.*~\(.*\)_source.changes/\1/')
+  printf "      %-12s " "$series_name"
+  if dput --force "${PPA_TARGET}" "$changes_file" 2>/dev/null; then
+    echo "ok"
+  else
+    echo "FAILED (non-fatal)"
+  fi
+done
+
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "==> Release ${VERSION} ready in ${RELEASE_DIR}/"
 echo "    $(ls -1 "$RELEASE_DIR" | wc -l) files"
 echo ""
 echo "To publish on GitHub:"
-echo "  git push origin v${VERSION}"
-echo "  gh release create v${VERSION} ${RELEASE_DIR}/* --title 'v${VERSION}' --notes-file ${RELEASE_DIR}/description.md"
+echo "  gh release create v${VERSION} ${RELEASE_DIR}/* --title 'v${VERSION}' --notes '## v${VERSION}'"
 echo ""
 echo "PPA uploads submitted for: ${PPA_SERIES[*]}"
 echo "  Monitor builds at: https://launchpad.net/~phntm/+archive/ubuntu/ppa"

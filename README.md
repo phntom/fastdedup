@@ -6,6 +6,7 @@ Deduplicate millions of files in seconds using reflinks. Zero extra disk space, 
 $ fastdedup /srv/backups
 
 Pass 1: Scanning file sizes in /srv/backups
+  Scanning: [████████████████░░░░░░░░░░░░░░]  53% 12,345/s ~1.5m
   Scanned 8,860,298 files, 571,197 unique sizes
 
 Top file sizes by potential savings:
@@ -15,17 +16,18 @@ Top file sizes by potential savings:
      3   500.0 MiB       114    55.2 GiB
      4    40.6 GiB         2    40.6 GiB
      5     4.0 GiB         7    24.0 GiB
-     6     3.6 GiB         3     7.1 GiB
-     7    81.7 MiB        95     7.5 GiB
-     8    81.7 MiB        90     7.1 GiB
-     9    81.7 MiB        90     7.1 GiB
-    10    81.9 MiB        84     6.6 GiB
-  ... and 9,990 more sizes
+  ... and 9,995 more sizes
 
 Pass 2: Deduplicating:
   [    1/10000]    4.0 GiB × 21        ✓ 18 deduped, 72.0 GiB saved
   [    2/10000]   76.5 GiB × 2         ✓ 1 deduped, 76.5 GiB saved
-  [    3/10000]  500.0 MiB × 114      [█████████████████████░░░░░░░░░]  71%
+  [    3/10000]  500.0 MiB × 114      [█████████████████████░░░░░░░░░]  71% (2%) ~4.2m
+
+Done in 5m12.3s!
+  Files deduped:    3,847
+  Space saved:      892.4 GiB
+  Already deduped:  12,156
+  Errors:           0
 ```
 
 ## How it works
@@ -121,9 +123,30 @@ MOUNTPOINTS=""
 
 # Minimum file size in bytes (default: 524288 = 512 KiB)
 # MIN_SIZE=524288
+
+# Log file for cron output (rotated by logrotate)
+LOG_FILE="/var/log/fastdedup.log"
+
+# Disable the dedup cache (reprocess everything each run)
+# export FASTDEDUP_NO_CACHE=1
+
+# Slack/Mattermost webhook for run summaries
+# export FASTDEDUP_WEBHOOK_UPDATES=https://mattermost.example.com/hooks/xxxx
+
+# Slack/Mattermost webhook for critical alerts (errors requiring intervention)
+# export FASTDEDUP_WEBHOOK_ALERTS=https://mattermost.example.com/hooks/xxxx
+
+# Machine identifier for webhook messages (defaults to hostname)
+# export FASTDEDUP_HOST_ID=my-server-01
+
+# Healthchecks.io dead man's switch URL (pinged after each successful run)
+# export FASTDEDUP_HEALTHCHECK_URL=https://hc-ping.com/xxxx
+
+# Disable anonymized error reporting to ~/.cache/fastdedup/report.txt
+# export FASTDEDUP_NO_REPORT_FILE=1
 ```
 
-By default, the cron job auto-detects all mounted btrfs, XFS, and ZFS filesystems using `findmnt` and runs fastdedup in quiet mode on each.
+By default, the cron job auto-detects all mounted btrfs, XFS, and ZFS filesystems using `findmnt` and runs fastdedup in quiet mode on each. A lock file prevents overlapping runs.
 
 ## Usage
 
@@ -147,6 +170,7 @@ fastdedup [flags] [directory]
 | `--fix-perms` | false | Temporarily add write permission to read-only directories during dedup, then restore |
 | `--snapshots` | false | Include `.snapshots` directories (skipped by default) |
 | `--raw-sizes` | false | Show raw byte counts instead of human-readable |
+| `--version` | false | Print version and exit |
 
 ### Hard link mode
 
@@ -162,7 +186,17 @@ Use `--dry-run --hardlink` first to see what would be linked. Only use this mode
 
 By default, fastdedup saves a small fingerprint of each processed file size group to `~/.cache/fastdedup/`. On the next run over the same directory, it skips groups where the set of filenames hasn't changed — meaning no files were added, removed, or renamed. This makes repeated runs over large directories nearly instant when little has changed.
 
-Use `--no-cache` to ignore saved state and reprocess everything.
+Use `--no-cache` or `FASTDEDUP_NO_CACHE=1` to ignore saved state and reprocess everything.
+
+### Concurrent run protection
+
+fastdedup uses per-directory lock files to prevent multiple instances from processing the same directory simultaneously. If a second instance is started on the same path, it exits immediately with a clear error. Different directories can be processed in parallel. The cron job also uses `flock` to prevent overlapping scheduled runs.
+
+### Webhooks
+
+Set `FASTDEDUP_WEBHOOK_UPDATES` to receive run summaries in Slack or Mattermost after each run. Set `FASTDEDUP_WEBHOOK_ALERTS` to receive alerts when errors require investigation. Messages include the machine identifier (`FASTDEDUP_HOST_ID` or hostname) so you can use a shared channel for multiple servers.
+
+Set `FASTDEDUP_HEALTHCHECK_URL` to ping a [healthchecks.io](https://healthchecks.io) (or compatible) dead man's switch URL after each successful run.
 
 ## Building from source
 

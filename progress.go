@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 var (
@@ -92,6 +93,26 @@ func printStatus(msg string) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "\r\033[K%s", msg)
+}
+
+// formatETA returns a compact time estimate string like "1.5m", "30s", "2.3h".
+func formatETA(elapsed time.Duration, current, total int) string {
+	if current <= 0 || total <= 0 || current > total {
+		return ""
+	}
+	rate := float64(current) / elapsed.Seconds()
+	if rate <= 0 {
+		return ""
+	}
+	remaining := float64(total-current) / rate
+	switch {
+	case remaining < 60:
+		return fmt.Sprintf("~%.0fs", remaining)
+	case remaining < 3600:
+		return fmt.Sprintf("~%.1fm", remaining/60)
+	default:
+		return fmt.Sprintf("~%.1fh", remaining/3600)
+	}
 }
 
 // finishLine completes the current line and moves to the next.

@@ -81,6 +81,14 @@ func main() {
 		return formatSize(b, *rawSizes)
 	}
 
+	// Acquire per-root lock to prevent concurrent runs.
+	lockFile, lockErr := acquireLock(root)
+	if lockErr != nil {
+		fmt.Fprintf(os.Stderr, "error: another fastdedup instance is already running on %s\n", root)
+		os.Exit(1)
+	}
+	defer releaseLock(lockFile)
+
 	// Load dedup cache.
 	var cacheFile string
 	var cached map[int64]uint64
@@ -101,7 +109,7 @@ func main() {
 		filenameHashes = make(map[int64]uint64)
 	}
 
-	// Estimate total files for progress bar: try metadata cache first, then statfs for mount points.
+	// Estimate progress: try metadata cache for file count, then statfs for used bytes.
 	var mFile string
 	var estimatedFiles int64
 	if cacheFile != "" {
@@ -113,21 +121,38 @@ func main() {
 	if estimatedFiles == 0 && isMountPoint(root) {
 		estimatedFiles = fsFileEstimate(root)
 	}
+	var estimatedBytes int64
+	if estimatedFiles == 0 {
+		estimatedBytes = fsUsedBytes(root)
+	}
 
 	var scanCount int64
+	var scanBytes int64
 	scanStart := time.Now()
+	lastUpdate := scanStart
 	fileCount, err := WalkSizes(root, sm, *snapshots, *minSize, func(path string, size int64) {
 		if filenameHashes != nil {
 			filenameHashes[size] += hashFilename(filepath.Base(path))
 		}
 		scanCount++
-		if scanCount%10_000 == 0 {
-			rate := int64(float64(scanCount) / time.Since(scanStart).Seconds())
-			suffix := fmt.Sprintf("%s/s", formatCount(rate))
-			if estimatedFiles > 0 {
-				printProgressBar("  Scanning:", int(scanCount), int(estimatedFiles), suffix)
-			} else {
-				printStatus(fmt.Sprintf("  Scanned: %s (%s)", formatCount(scanCount), suffix))
+		scanBytes += size
+		if scanCount%100 == 0 {
+			now := time.Now()
+			if now.Sub(lastUpdate) >= 200*time.Millisecond {
+				lastUpdate = now
+				elapsed := now.Sub(scanStart)
+				rate := int64(float64(scanCount) / elapsed.Seconds())
+				if estimatedFiles > 0 {
+					eta := formatETA(elapsed, int(scanCount), int(estimatedFiles))
+					suffix := fmt.Sprintf("%s/s %s", formatCount(rate), eta)
+					printProgressBar("  Scanning:", int(scanCount), int(estimatedFiles), suffix)
+				} else if estimatedBytes > 0 {
+					eta := formatETA(elapsed, int(scanBytes), int(estimatedBytes))
+					suffix := fmt.Sprintf("%s / %s %s", formatSize(scanBytes, false), formatSize(estimatedBytes, false), eta)
+					printProgressBar("  Scanning:", int(scanBytes), int(estimatedBytes), suffix)
+				} else {
+					printStatus(fmt.Sprintf("  Scanned: %s (%s/s)", formatCount(scanCount), formatCount(rate)))
+				}
 			}
 		}
 	})
@@ -213,6 +238,7 @@ func main() {
 
 	var filesProcessed int64 // cumulative files across all groups
 	var noDupGroups int64    // groups where no action was taken
+	dedupStart := time.Now()
 
 	// processGroup deduplicates one size group and accumulates stats.
 	processGroup := func(idx, total int, size int64, paths []string) {
@@ -225,8 +251,10 @@ func main() {
 		groupBase := filesProcessed
 		stats := ProcessSizeGroup(paths, size, *dryRun, *verbose, *rawSizes, *hardlink, *fixPerms, func(current int) {
 			if current%step == 0 || current == len(paths) {
-				overallPct := int((groupBase + int64(current)) * 100 / expectedFiles)
-				suffix := fmt.Sprintf("(%d%%)", overallPct)
+				overall := int(groupBase + int64(current))
+				eta := formatETA(time.Since(dedupStart), overall, int(expectedFiles))
+				overallPct := overall * 100 / int(expectedFiles)
+				suffix := fmt.Sprintf("(%d%%) %s", overallPct, eta)
 				printProgressBar(prefix, current, len(paths), suffix)
 			}
 		})
@@ -282,10 +310,17 @@ func main() {
 		}
 
 		var collectCount int64
+		collectStart := time.Now()
+		lastCollectUpdate := collectStart
 		collected, err := CollectFiles(root, targetSet, *snapshots, *minSize, dirPool, func() {
 			collectCount++
-			if collectCount%10_000 == 0 {
-				printProgressBar("  Collecting:", int(collectCount), int(expectedFiles), "")
+			if collectCount%100 == 0 {
+				now := time.Now()
+				if now.Sub(lastCollectUpdate) >= 200*time.Millisecond {
+					lastCollectUpdate = now
+					eta := formatETA(now.Sub(collectStart), int(collectCount), int(expectedFiles))
+					printProgressBar("  Collecting:", int(collectCount), int(expectedFiles), eta)
+				}
 			}
 		})
 		if err != nil {
@@ -372,6 +407,8 @@ func main() {
 		memBudget := *memBudgetMB * 1024 * 1024
 
 		var collectCount int64
+		defaultCollectStart := time.Now()
+		lastDefaultCollectUpdate := defaultCollectStart
 		_ = walkRandom(root, *snapshots, *minSize, func(path string, size int64) {
 			if _, ok := targetSet[size]; !ok {
 				return
@@ -381,8 +418,13 @@ func main() {
 			}
 
 			collectCount++
-			if collectCount%10_000 == 0 {
-				printProgressBar("  Collecting:", int(collectCount), int(expectedFiles), "")
+			if collectCount%100 == 0 {
+				now := time.Now()
+				if now.Sub(lastDefaultCollectUpdate) >= 200*time.Millisecond {
+					lastDefaultCollectUpdate = now
+					eta := formatETA(now.Sub(defaultCollectStart), int(collectCount), int(expectedFiles))
+					printProgressBar("  Collecting:", int(collectCount), int(expectedFiles), eta)
+				}
 			}
 
 			dir, name := filepath.Dir(path), filepath.Base(path)

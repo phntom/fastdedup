@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestFormatSize(t *testing.T) {
 	tests := []struct {
@@ -56,6 +59,33 @@ func TestFormatCount(t *testing.T) {
 			got := formatCount(tt.n)
 			if got != tt.want {
 				t.Errorf("formatCount(%d) = %q, want %q", tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatETA(t *testing.T) {
+	tests := []struct {
+		name    string
+		elapsed time.Duration
+		current int
+		total   int
+		want    string
+	}{
+		{"half done 10s", 10 * time.Second, 50, 100, "~10s"},
+		{"quarter done 1m", time.Minute, 25, 100, "~3.0m"},
+		{"90% done 9m", 9 * time.Minute, 90, 100, "~1.0m"},
+		{"half done 2h", 2 * time.Hour, 50, 100, "~2.0h"},
+		{"zero current", time.Second, 0, 100, ""},
+		{"zero total", time.Second, 50, 0, ""},
+		{"current exceeds total", time.Second, 101, 100, ""},
+		{"done", time.Second, 100, 100, "~0s"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatETA(tt.elapsed, tt.current, tt.total)
+			if got != tt.want {
+				t.Errorf("formatETA(%v, %d, %d) = %q, want %q", tt.elapsed, tt.current, tt.total, got, tt.want)
 			}
 		})
 	}

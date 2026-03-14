@@ -184,6 +184,21 @@ func fsFileEstimate(path string) int64 {
 	return used
 }
 
+// fsUsedBytes returns the number of bytes used on the filesystem containing path.
+func fsUsedBytes(path string) int64 {
+	var stat syscall.Statfs_t
+	if err := syscall.Statfs(path, &stat); err != nil {
+		return 0
+	}
+	total := int64(stat.Blocks) * int64(stat.Bsize)
+	free := int64(stat.Bfree) * int64(stat.Bsize)
+	used := total - free
+	if used <= 0 {
+		return 0
+	}
+	return used
+}
+
 // sameInode reports whether two paths refer to the same inode on the same device.
 func sameInode(a, b string) (bool, error) {
 	var statA, statB syscall.Stat_t

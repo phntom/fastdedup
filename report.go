@@ -145,7 +145,7 @@ func loadReportKeys(path string) map[string]bool {
 	if err != nil {
 		return keys
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -203,7 +203,6 @@ func appendReport(reportFile string, errors []DedupError, ver string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
 	if needHeader {
 		fmt.Fprintln(f, "# fastdedup error report — anonymized, no personally identifiable information")
@@ -215,5 +214,7 @@ func appendReport(reportFile string, errors []DedupError, ver string) error {
 		fmt.Fprintln(f, entry)
 	}
 
-	return nil
+	// The report is advisory, but the close error (e.g. a failed flush on
+	// NFS) is cheap to surface: the caller logs it.
+	return f.Close()
 }

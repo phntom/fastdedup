@@ -31,7 +31,9 @@ func main() {
 	if err != nil {
 		fatal("create temp dir: %v", err)
 	}
-	defer os.RemoveAll(dir)
+	// Best-effort cleanup on exit; the path is printed below so a failed
+	// removal can be diagnosed by hand.
+	defer os.RemoveAll(dir) //nolint:errcheck // best-effort temp cleanup
 	fmt.Printf("==> Test directory: %s\n", dir)
 
 	// --- Generate test files ---

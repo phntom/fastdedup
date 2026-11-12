@@ -33,7 +33,7 @@ func loadCache(path string) map[int64]uint64 {
 	if err != nil {
 		return make(map[int64]uint64)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file
 	var hashes map[int64]uint64
 	if err := gob.NewDecoder(f).Decode(&hashes); err != nil {
 		return make(map[int64]uint64)
@@ -54,12 +54,12 @@ func saveCache(path string, hashes map[int64]uint64) error {
 		return err
 	}
 	if err := gob.NewEncoder(f).Encode(hashes); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)
@@ -81,7 +81,7 @@ func loadMeta(path string) *ScanMeta {
 	if err != nil {
 		return nil
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // read-only file
 	var meta ScanMeta
 	if err := gob.NewDecoder(f).Decode(&meta); err != nil {
 		return nil
@@ -100,12 +100,12 @@ func saveMeta(path string, meta *ScanMeta) error {
 		return err
 	}
 	if err := gob.NewEncoder(f).Encode(meta); err != nil {
-		f.Close()
-		os.Remove(tmp)
+		_ = f.Close()
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := f.Close(); err != nil {
-		os.Remove(tmp)
+		_ = os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

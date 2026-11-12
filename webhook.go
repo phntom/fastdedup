@@ -39,7 +39,9 @@ func sendWebhook(url, text string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	// The bare deferred close is the standard pattern for HTTP bodies: a
+	// close error on an already-drained response body carries no signal.
+	defer resp.Body.Close() //nolint:errcheck // best-effort body cleanup
 	if resp.StatusCode >= 300 {
 		return fmt.Errorf("webhook returned status %d", resp.StatusCode)
 	}
@@ -88,5 +90,7 @@ func pingHealthcheck(url string) {
 		slog.Debug("failed to ping healthcheck", "error", err)
 		return
 	}
-	resp.Body.Close()
+	// Best-effort dead man's switch ping: the signal is the request itself,
+	// a body close error means nothing here.
+	defer resp.Body.Close() //nolint:errcheck // best-effort body cleanup
 }

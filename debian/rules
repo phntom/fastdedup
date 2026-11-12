@@ -6,7 +6,11 @@ DEB_VERSION := $(shell dpkg-parsechangelog -S Version)
 	dh $@
 
 override_dh_auto_build:
-	HOME=$(CURDIR) GOMODCACHE=$(CURDIR)/.gomodcache GOCACHE=$(CURDIR)/.gocache GOTOOLCHAIN=local GOFLAGS=-mod=vendor go build -ldflags="-s -w -X main.version=$(DEB_VERSION)" -o fastdedup .
+	# golang-1.26-go ships no /usr/bin/go symlink (that belongs to the
+	# golang-go metapackage, which is too old on our target series), so
+	# the versioned binary must be invoked by absolute path with its own
+	# GOROOT and PATH.
+	HOME=$(CURDIR) GOMODCACHE=$(CURDIR)/.gomodcache GOCACHE=$(CURDIR)/.gocache GOROOT=/usr/lib/go-1.26 PATH=/usr/lib/go-1.26/bin:$(PATH) GOTOOLCHAIN=local GOFLAGS=-mod=vendor /usr/lib/go-1.26/bin/go build -ldflags="-s -w -X main.version=$(DEB_VERSION)" -o fastdedup .
 
 override_dh_auto_install:
 	install -D -m 0755 fastdedup debian/fastdedup/usr/bin/fastdedup

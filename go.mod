@@ -1,5 +1,7 @@
-module fastdedup
+module github.com/phntom/fastdedup
 
-go 1.22.0
+go 1.26.0
 
-require golang.org/x/sys v0.30.0
+toolchain go1.27.4
+
+require golang.org/x/sys v0.50.0

@@ -1,0 +1,20 @@
+# golangci-lint v2 configuration (picked up by the CI lint job and by a
+# plain `golangci-lint run`). Schema: https://golangci-lint.run/usage/configuration/
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused — nothing exotic.
+  default: standard
+  settings:
+    errcheck:
+      # fastdedup is a CLI: fmt.Fprint* writes go to stdout/stderr (or to the
+      # best-effort error-report file) and no caller could meaningfully
+      # handle their failure, so leaving them unchecked is deliberate.
+      # This is the standard errcheck exclusion for CLI tools; everything
+      # else errcheck reports must be fixed in code (checked, or explicitly
+      # discarded with `_ =`). Built-in defaults (fmt.Print* to stdout,
+      # io.Writer implementations, ...) stay active alongside this list.
+      exclude-functions:
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Fprint

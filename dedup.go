@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 )
 
 // Extent represents a contiguous physical region of a file on disk.
@@ -43,6 +44,57 @@ type DedupStats struct {
 type fileRef struct {
 	path    string
 	extents []Extent
+	links   int // files deduped onto this reference during the current run
+}
+
+// storageStat returns a hashable identity of the file's storage (device and
+// inode numbers) together with its hard-link count. ok is false when the
+// platform's stat wrapper exposes no inode fields (e.g. windows) or the file
+// cannot be stat'ed; callers must then treat the file as a lone file.
+//
+// The raw stat data is read through reflection because the concrete types
+// behind os.FileInfo.Sys() (syscall.Stat_t and friends) are platform-specific
+// and absent on some platforms, so a direct type assertion would not compile
+// everywhere fastdedup builds.
+func storageStat(path string) (key string, nlink int, ok bool) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return "", 0, false
+	}
+	v := reflect.Indirect(reflect.ValueOf(fi.Sys()))
+	if v.Kind() != reflect.Struct {
+		return "", 0, false
+	}
+	ino := statField(v.FieldByName("Ino"))
+	dev := statField(v.FieldByName("Dev"))
+	if ino == nil || dev == nil {
+		return "", 0, false
+	}
+	key = fmt.Sprintf("%d:%d", *dev, *ino)
+	nl := statField(v.FieldByName("Nlink"))
+	if nl == nil || *nl > uint64(^uint(0)>>1) {
+		return key, 0, false
+	}
+	return key, int(*nl), true
+}
+
+// statField reads a numeric stat field as a uint64, or returns nil when the
+// field is missing or not a plain integer.
+func statField(f reflect.Value) *uint64 {
+	switch f.Kind() {
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		v := f.Uint()
+		return &v
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		v := f.Int()
+		if v < 0 {
+			return nil
+		}
+		u := uint64(v)
+		return &u
+	default:
+		return nil
+	}
 }
 
 // CollectFiles walks the tree once and returns file paths grouped by target size.
@@ -75,9 +127,21 @@ func CollectFiles(root string, targetSet map[int64]struct{}, includeSnapshots bo
 // permissions, cross-device), the file is tried against remaining refs. If all
 // matching refs fail, the file is added as an alternative ref so future files
 // can dedup against it instead.
+//
+// A file that is already part of an established storage family (several hard
+// links already share its inode) is never treated as a fresh duplicate of a
+// lone reference: instead the reference is linked onto the family, so a new
+// duplicate joins the existing family inode and exactly one file is counted
+// as deduped, regardless of the order files are visited in.
 func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, rawSizes bool, hardlink bool, fixPerms bool, onProgress func(current int)) *DedupStats {
 	stats := &DedupStats{}
 	var refs []*fileRef
+	// family maps the inode identity of a storage family that a reference
+	// has been linked onto (see tryJoinFamily) back to that reference, so
+	// later members of the family are recognised as already deduped —
+	// including in a dry run, where the reference has not physically
+	// moved onto the family inode yet.
+	family := make(map[string]*fileRef)
 
 	for i, path := range paths {
 		if onProgress != nil {
@@ -93,6 +157,70 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 		if len(refs) == 0 {
 			refs = append(refs, &fileRef{path: path, extents: extents})
 			continue
+		}
+
+		// Member of a storage family that a reference already joined:
+		// already sharing storage with that reference, nothing to do.
+		// (Real runs usually catch this through the sameInode / sameExtents
+		// fast paths below; the map is what makes it visible in dry runs.)
+		if len(family) > 0 {
+			if key, _, ok := storageStat(path); ok {
+				if _, joined := family[key]; joined {
+					stats.AlreadyDeduped++
+					continue
+				}
+			}
+		}
+
+		// tryJoinFamily links the reference file onto the established
+		// storage family of path when that is the honest direction: the
+		// family is already sharing storage (multiple links) while the
+		// reference is a lone file nothing has been deduped onto yet.
+		// Linking the family onto the reference instead would migrate
+		// every family member onto the new file's inode and over-report
+		// the dedup count. It reports whether the reversal was applied
+		// (or, in a dry run, simulated) and the error of a failed attempt,
+		// in which case the caller falls back to the normal direction.
+		tryJoinFamily := func(ref *fileRef) (bool, error) {
+			// Only a reference with no dedups of its own can be moved
+			// without stranding files already linked onto it.
+			if ref.links > 0 {
+				return false, nil
+			}
+			key, fileLinks, ok := storageStat(path)
+			if !ok || fileLinks <= 1 {
+				return false, nil
+			}
+			refKey, refLinks, ok := storageStat(ref.path)
+			if !ok || refKey == key || refLinks != 1 {
+				return false, nil
+			}
+
+			if dryRun {
+				fmt.Printf("[dry-run] dedup: %s -> %s (%s)\n", ref.path, path, formatSize(size, rawSizes))
+			} else {
+				var err error
+				if hardlink {
+					err = hardlinkFile(path, ref.path, fixPerms)
+				} else {
+					err = dedupFile(path, ref.path, fixPerms)
+				}
+				if err != nil {
+					return false, err
+				}
+				if verbose {
+					fmt.Fprintf(os.Stderr, "    %s -> %s\n", ref.path, path)
+				}
+			}
+
+			// The reference now (or, in a dry run, would) share the
+			// family's storage.
+			ref.links++
+			if extents != nil {
+				ref.extents = extents
+			}
+			family[key] = ref
+			return true, nil
 		}
 
 		deduped := false
@@ -137,6 +265,25 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 			// Identical content found.
 			contentMatch = true
 
+			// If the file is already part of an established family,
+			// have the reference join it instead of the other way round.
+			joined, joinErr := tryJoinFamily(ref)
+			if joined {
+				slog.Debug("deduped new duplicate onto existing family", "file", ref.path, "family", path, "size", size)
+				stats.BytesSaved += size
+				stats.FilesDeduped++
+				stats.AlreadyDeduped++
+				deduped = true
+				break
+			}
+			if joinErr != nil {
+				if firstDedupErr == nil {
+					firstDedupErr = joinErr
+					firstRefPath = ref.path
+				}
+				slog.Debug("joining existing family failed, trying normal dedup", "src", path, "dst", ref.path, "error", joinErr)
+			}
+
 			if dryRun {
 				fmt.Printf("[dry-run] dedup: %s -> %s (%s)\n", path, ref.path, formatSize(size, rawSizes))
 				stats.BytesSaved += size
@@ -165,6 +312,7 @@ func ProcessSizeGroup(paths []string, size int64, dryRun bool, verbose bool, raw
 				fmt.Fprintf(os.Stderr, "    %s -> %s\n", path, ref.path)
 			}
 			slog.Debug("deduped", "file", path, "ref", ref.path, "size", size)
+			ref.links++
 			stats.BytesSaved += size
 			stats.FilesDeduped++
 			deduped = true
@@ -208,14 +356,14 @@ func filesEqual(pathA, pathB string) (bool, error) {
 		return false, err
 	}
 	//goland:noinspection GoUnhandledErrorResult
-	defer fa.Close()
+	defer fa.Close() //nolint:errcheck // read-only file
 
 	fb, err := os.Open(pathB)
 	if err != nil {
 		return false, err
 	}
 	//goland:noinspection GoUnhandledErrorResult
-	defer fb.Close()
+	defer fb.Close() //nolint:errcheck // read-only file
 
 	const chunkSize = 256 * 1024
 	bufA := make([]byte, chunkSize)
@@ -279,8 +427,10 @@ func hardlinkFile(src, dst string, fixPerms bool) error {
 
 	//goland:noinspection GoUnhandledErrorResult
 	rollback := func() {
-		os.Remove(dst)
-		os.Rename(tmpPath, dst)
+		// Best-effort crash recovery: if restoring the backup fails too,
+		// there is nothing further this process could do about it.
+		_ = os.Remove(dst)
+		_ = os.Rename(tmpPath, dst)
 	}
 
 	// Step 2: create hard link from src to dst.
@@ -297,7 +447,7 @@ func hardlinkFile(src, dst string, fixPerms bool) error {
 
 	// Step 4: success — remove the backup.
 	//goland:noinspection GoUnhandledErrorResult
-	os.Remove(tmpPath)
+	_ = os.Remove(tmpPath)
 	return nil
 }
 
@@ -339,8 +489,10 @@ func dedupFile(src, dst string, fixPerms bool) error {
 
 	//goland:noinspection GoUnhandledErrorResult
 	rollback := func() {
-		os.Remove(dst)
-		os.Rename(tmpPath, dst)
+		// Best-effort crash recovery: if restoring the backup fails too,
+		// there is nothing further this process could do about it.
+		_ = os.Remove(dst)
+		_ = os.Rename(tmpPath, dst)
 	}
 
 	// Step 2: create reflink copy of src at dst.
@@ -362,7 +514,7 @@ func dedupFile(src, dst string, fixPerms bool) error {
 
 	// Step 5: success — remove the backup.
 	//goland:noinspection GoUnhandledErrorResult
-	os.Remove(tmpPath)
+	_ = os.Remove(tmpPath)
 	return nil
 }
 
@@ -376,7 +528,7 @@ func dedupFileInPlace(src, dst string, dstInfo os.FileInfo, fixPerms bool) error
 		return fmt.Errorf("backup for in-place dedup: %w", err)
 	}
 	//goland:noinspection GoUnhandledErrorResult
-	defer os.Remove(backupPath)
+	defer os.Remove(backupPath) //nolint:errcheck // best-effort temp cleanup
 
 	// If the file is read-only and --fix-perms is set, temporarily make it writable.
 	origMode := dstInfo.Mode().Perm()
@@ -384,7 +536,8 @@ func dedupFileInPlace(src, dst string, dstInfo os.FileInfo, fixPerms bool) error
 		if err := os.Chmod(dst, origMode|0200); err != nil {
 			slog.Debug("cannot chmod file writable", "path", dst, "error", err)
 		} else {
-			defer os.Chmod(dst, origMode)
+			//goland:noinspection GoUnhandledErrorResult
+			defer os.Chmod(dst, origMode) //nolint:errcheck // best-effort permission restore
 		}
 	}
 
@@ -436,7 +589,7 @@ func backupToTemp(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer src.Close()
+	defer src.Close() //nolint:errcheck // read-only file
 
 	tmp, err := os.CreateTemp("", "dedup-backup-*")
 	if err != nil {
@@ -445,18 +598,21 @@ func backupToTemp(path string) (string, error) {
 	tmpPath := tmp.Name()
 
 	if _, err := io.Copy(tmp, src); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
 		return "", err
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
+		_ = os.Remove(tmpPath)
 		return "", err
 	}
 	return tmpPath, nil
 }
 
 // restoreFromTemp copies content from a temp backup back into dst (in-place).
+// It is crash-recovery code: every step is deliberately best-effort — there
+// is no useful error handling left once the original operation already
+// failed, so failures are explicitly discarded rather than plumbed through.
 //
 //goland:noinspection GoUnhandledErrorResult
 func restoreFromTemp(backupPath, dst string) {
@@ -464,15 +620,15 @@ func restoreFromTemp(backupPath, dst string) {
 	if err != nil {
 		return
 	}
-	defer src.Close()
+	defer src.Close() //nolint:errcheck // read-only file
 
 	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_TRUNC, 0)
 	if err != nil {
 		return
 	}
-	defer dstFile.Close()
+	defer dstFile.Close() //nolint:errcheck // best-effort rollback
 
-	io.Copy(dstFile, src)
+	_, _ = io.Copy(dstFile, src)
 }
 
 // addDirWrite temporarily adds owner-write permission to a directory.
@@ -492,6 +648,6 @@ func addDirWrite(dir string) (restore func(), err error) {
 	}
 	return func() {
 		//goland:noinspection GoUnhandledErrorResult
-		os.Chmod(dir, origMode)
+		_ = os.Chmod(dir, origMode)
 	}, nil
 }

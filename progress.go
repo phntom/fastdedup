@@ -71,20 +71,9 @@ func printProgressBar(prefix string, current, total int64, suffix string) {
 		return
 	}
 	pct := current * 100 / total
-	filled := int(barWidth * current / total)
-	if filled > barWidth {
-		filled = barWidth
-	}
+	filled := min(int(barWidth*current/total), barWidth)
 	bar := strings.Repeat("\u2588", filled) + strings.Repeat("\u2591", barWidth-filled)
 	fmt.Fprintf(os.Stderr, "\r\033[K%s [%s] %3d%% %s", prefix, bar, pct, suffix)
-}
-
-// printCounter renders a counter on stderr, overwriting the current line.
-func printCounter(prefix string, count int64) {
-	if quietMode || !isTTY {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "\r\033[K%s %s", prefix, formatCount(count))
 }
 
 // printStatus renders a status message on stderr, overwriting the current line.

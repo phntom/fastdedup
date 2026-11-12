@@ -7,7 +7,8 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
-	"syscall"
+
+	"golang.org/x/sys/unix"
 )
 
 // acquireLock takes a non-blocking exclusive flock on a per-root lock file.
@@ -19,7 +20,9 @@ func acquireLock(root string) (*os.File, error) {
 		dir = os.TempDir()
 	}
 	lockDir := filepath.Join(dir, "fastdedup")
-	os.MkdirAll(lockDir, 0755)
+	// Best-effort: if creating the directory fails, the OpenFile below
+	// reports the real problem.
+	_ = os.MkdirAll(lockDir, 0755)
 
 	h := fnv.New64a()
 	h.Write([]byte(root))
@@ -29,18 +32,20 @@ func acquireLock(root string) (*os.File, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		_ = f.Close()
 		return nil, err
 	}
 	return f, nil
 }
 
-// releaseLock releases the flock and closes the file.
+// releaseLock releases the flock and closes the file. Both steps are
+// best-effort: the process is on its way out and nothing could act on a
+// failure here anyway.
 func releaseLock(f *os.File) {
 	if f == nil {
 		return
 	}
-	syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-	f.Close()
+	_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+	_ = f.Close()
 }

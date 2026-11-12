@@ -1,5 +1,16 @@
-fastdedup (0.0.8~ppa1~jammy) jammy; urgency=low
+fastdedup (0.1.0) unstable; urgency=medium
 
-  * Release v0.0.8
+  * Modernize: Go 1.26 baseline, CI, e2e suite, wave-budget and dedup-count fixes, packaging refresh
+  * Fix wave mode silently skipping size groups that exceed --mem-budget: such groups are now processed individually via a per-size scan
+  * Fix dedup-count inflation when a new duplicate is walked before an already-deduped family: counts are now walk-order-independent and new duplicates always join the existing reflink family
+  * Require Go 1.26 or newer and rename the module to github.com/phntom/fastdedup; restructure main into main.go + run.go
+  * Add GitHub Actions CI (ci.yml) and a black-box end-to-end test suite
+  * Packaging refresh: golang-1.26-go (>= 1.26~) in debian/control, bundled Go 1.26.8 toolchain for the EOL PPA series (oracular, plucky, questing)
 
- -- PHANTOm <phantom@kix.co.il>  Sat, 14 Mar 2026 10:24:52 +0200
+ -- PHANTOm <phantom@kix.co.il>  Wed, 11 Nov 2026 23:38:24 +0200
+
+fastdedup (0.0.9~ppa1~jammy) jammy; urgency=low
+
+  * Release v0.0.9
+
+ -- PHANTOm <phantom@kix.co.il>  Sat, 14 Mar 2026 14:20:42 +0200

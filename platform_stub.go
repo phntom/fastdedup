@@ -3,11 +3,11 @@
 package main
 
 import (
-	"fmt"
+	"errors"
 	"os"
 )
 
-var errUnsupported = fmt.Errorf("fastdedup requires Linux (btrfs is Linux-only)")
+var errUnsupported = errors.New("fastdedup requires Linux (btrfs is Linux-only)")
 
 func getExtents(_ string) ([]Extent, error) {
 	return nil, errUnsupported

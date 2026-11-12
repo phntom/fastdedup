@@ -1,5 +1,7 @@
 # fastdedup
 
+[![CI](https://github.com/phntom/fastdedup/actions/workflows/ci.yml/badge.svg)](https://github.com/phntom/fastdedup/actions/workflows/ci.yml)
+
 Deduplicate millions of files in seconds using reflinks. Zero extra disk space, no data copying — just instant copy-on-write deduplication. Optimized for btrfs, also works on XFS and ZFS.
 
 ```
@@ -90,6 +92,15 @@ chmod +x fastdedup-linux-amd64
 sudo mv fastdedup-linux-amd64 /usr/local/bin/fastdedup
 ```
 
+### Build from source (go install)
+
+Requires [Go](https://go.dev/dl/) 1.26 or newer:
+```bash
+go install github.com/phntom/fastdedup@latest
+```
+
+The binary is installed to `$(go env GOPATH)/bin` (typically `~/go/bin/fastdedup`).
+
 ## Scheduled deduplication
 
 Install `fastdedup-daily` or `fastdedup-weekly` to automatically deduplicate all mounted btrfs, XFS, and ZFS filesystems:
@@ -174,7 +185,7 @@ fastdedup [flags] [directory]
 | `-q` | false | Quiet mode — only print final summary (for cronjobs) |
 | `--batch` | false | Collect all target files in one pass (faster, uses more memory) |
 | `--low-memory` | false | Scan separately for each file size (lowest memory, slower) |
-| `--mem-budget` | 256 | Memory budget in MiB for path cache in default mode |
+| `--mem-budget` | 256 | Memory budget in MiB for the path cache in default mode; size groups that cannot fit the budget are processed individually instead of being skipped |
 | `--no-cache` | false | Reprocess all file sizes even if unchanged since last run |
 | `--hardlink` | false | Use hard links instead of reflinks (works on any filesystem — see warning below) |
 | `--fix-perms` | false | Temporarily add write permission to read-only directories during dedup, then restore |
@@ -184,6 +195,8 @@ fastdedup [flags] [directory]
 | `--defrag` | false | Run `btrfs defragment` after dedup/scrub completes (requires root, btrfs only) |
 | `--raw-sizes` | false | Show raw byte counts instead of human-readable |
 | `--version` | false | Print version and exit |
+
+In default mode, pass 2 works in waves: it collects target file paths into memory up to the `--mem-budget`, deduplicates the collected groups, frees the memory, and repeats for the remaining groups. Size groups that cannot fit the budget — alone or together with the rest of a wave — are not skipped: they are finished via a separate per-size scan that handles any group size.
 
 ### Hard link mode
 
@@ -213,6 +226,7 @@ Set `FASTDEDUP_HEALTHCHECK_URL` to ping a [healthchecks.io](https://healthchecks
 
 ## Building from source
 
+Requires Go 1.26 or newer:
 ```bash
 go build -ldflags="-s -w" -o fastdedup .
 ```
@@ -240,6 +254,21 @@ To publish on GitHub after running the release script:
 git push origin v<version>
 gh release create v<version> release/<version>/* --title 'v<version>' --notes-file release/<version>/description.md
 ```
+
+## Development
+
+```bash
+go test ./...          # unit tests + e2e suite (e2e skips under -short)
+golangci-lint run      # lint (same config CI enforces)
+```
+
+The e2e suite (`e2e_test.go`) drives the compiled binary as a black box. Environment knobs:
+
+- `FASTDEDUP_E2E_DIR` — directory to build test fixture trees in (point it at a btrfs/XFS mount so reflinks are actually exercised)
+- `FASTDEDUP_E2E_REQUIRE_REFLINK` — set to `1` to fail instead of skip when the filesystem lacks reflink support
+- `FASTDEDUP_E2E_BIN` — absolute path to a prebuilt binary to test instead of building one
+
+CI ([ci.yml](https://github.com/phntom/fastdedup/blob/main/.github/workflows/ci.yml)) runs on every push to `main` and every pull request: build, vet, race-enabled tests, gofmt and module-tidiness checks, golangci-lint, cross-builds, shellcheck, and the e2e suite against real btrfs and XFS filesystem images.
 
 ## Testing
 

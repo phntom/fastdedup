@@ -2,7 +2,7 @@ Source: fastdedup
 Section: utils
 Priority: optional
 Maintainer: PHANTOm <phantom@kix.co.il>
-Build-Depends: debhelper-compat (= 13), golang-go (>= 2:1.22~)
+Build-Depends: debhelper-compat (= 13), golang-1.26-go (>= 1.26~)
 Standards-Version: 4.6.2
 Homepage: https://github.com/phntom/fastdedup
 Vcs-Git: https://github.com/phntom/fastdedup.git

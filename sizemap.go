@@ -60,10 +60,7 @@ func (sm *SizeMap) TopN(n int) []SizeEntry {
 
 // evict removes the bottom 10% of entries by potential savings.
 func (sm *SizeMap) evict() {
-	evictCount := sm.maxSize / 10
-	if evictCount < 1 {
-		evictCount = 1
-	}
+	evictCount := max(sm.maxSize/10, 1)
 
 	type entry struct {
 		size    int64

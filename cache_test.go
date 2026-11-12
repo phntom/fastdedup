@@ -90,7 +90,9 @@ func TestCacheRoundTrip(t *testing.T) {
 
 	t.Run("corrupt file returns empty", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "cache.gob")
-		os.WriteFile(p, []byte("not gob data"), 0644)
+		if err := os.WriteFile(p, []byte("not gob data"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		loaded := loadCache(p)
 		if len(loaded) != 0 {
 			t.Errorf("expected empty map for corrupt file, got %d entries", len(loaded))
@@ -99,7 +101,9 @@ func TestCacheRoundTrip(t *testing.T) {
 
 	t.Run("empty file returns empty", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "cache.gob")
-		os.WriteFile(p, []byte(""), 0644)
+		if err := os.WriteFile(p, []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
 		loaded := loadCache(p)
 		if len(loaded) != 0 {
 			t.Errorf("expected empty map for empty file, got %d entries", len(loaded))
@@ -128,7 +132,9 @@ func TestCacheRoundTrip(t *testing.T) {
 	t.Run("no tmp file left", func(t *testing.T) {
 		dir := t.TempDir()
 		p := filepath.Join(dir, "cache.gob")
-		saveCache(p, map[int64]uint64{1: 2})
+		if err := saveCache(p, map[int64]uint64{1: 2}); err != nil {
+			t.Fatal(err)
+		}
 		entries, _ := os.ReadDir(dir)
 		for _, e := range entries {
 			if strings.HasSuffix(e.Name(), ".tmp") {
@@ -139,8 +145,12 @@ func TestCacheRoundTrip(t *testing.T) {
 
 	t.Run("overwrite", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "cache.gob")
-		saveCache(p, map[int64]uint64{1: 10})
-		saveCache(p, map[int64]uint64{2: 20})
+		if err := saveCache(p, map[int64]uint64{1: 10}); err != nil {
+			t.Fatal(err)
+		}
+		if err := saveCache(p, map[int64]uint64{2: 20}); err != nil {
+			t.Fatal(err)
+		}
 		loaded := loadCache(p)
 		if _, ok := loaded[1]; ok {
 			t.Error("old data should be overwritten")
@@ -191,7 +201,9 @@ func TestMetaRoundTrip(t *testing.T) {
 
 	t.Run("corrupt returns nil", func(t *testing.T) {
 		p := filepath.Join(t.TempDir(), "scan.meta")
-		os.WriteFile(p, []byte("garbage"), 0644)
+		if err := os.WriteFile(p, []byte("garbage"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		if loadMeta(p) != nil {
 			t.Error("expected nil for corrupt file")
 		}

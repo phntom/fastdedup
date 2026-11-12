@@ -83,7 +83,7 @@ func TestPathPattern(t *testing.T) {
 }
 
 func itoa(n int) string {
-	return strings.TrimSpace(strings.Replace(formatCount(int64(n)), ",", "", -1))
+	return strings.TrimSpace(strings.ReplaceAll(formatCount(int64(n)), ",", ""))
 }
 
 func TestPathPatternSegments(t *testing.T) {
@@ -207,7 +207,9 @@ func TestLoadReportKeys(t *testing.T) {
 
 	t.Run("empty file", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "report.txt")
-		os.WriteFile(f, []byte(""), 0644)
+		if err := os.WriteFile(f, []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
 		keys := loadReportKeys(f)
 		if len(keys) != 0 {
 			t.Errorf("expected empty map, got %d keys", len(keys))
@@ -216,7 +218,9 @@ func TestLoadReportKeys(t *testing.T) {
 
 	t.Run("comments and short lines", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "report.txt")
-		os.WriteFile(f, []byte("# comment\nshort\n# another\n"), 0644)
+		if err := os.WriteFile(f, []byte("# comment\nshort\n# another\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		keys := loadReportKeys(f)
 		if len(keys) != 0 {
 			t.Errorf("expected empty map, got %d keys", len(keys))
@@ -226,7 +230,9 @@ func TestLoadReportKeys(t *testing.T) {
 	t.Run("valid entries", func(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "report.txt")
 		content := "0123456789abcdef rest of line\nfedcba9876543210 another line\n"
-		os.WriteFile(f, []byte(content), 0644)
+		if err := os.WriteFile(f, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
 		keys := loadReportKeys(f)
 		if len(keys) != 2 {
 			t.Errorf("expected 2 keys, got %d", len(keys))
@@ -285,10 +291,14 @@ func TestAppendReport(t *testing.T) {
 			Err: "test error", SrcPath: "/src/a.txt", DstPath: "/dst/b.txt",
 		}}
 		// First write.
-		appendReport(f, errors, "0.0.8")
+		if err := appendReport(f, errors, "0.0.8"); err != nil {
+			t.Fatal(err)
+		}
 		data1, _ := os.ReadFile(f)
 		// Second write with same error — should be suppressed.
-		appendReport(f, errors, "0.0.8")
+		if err := appendReport(f, errors, "0.0.8"); err != nil {
+			t.Fatal(err)
+		}
 		data2, _ := os.ReadFile(f)
 		if string(data1) != string(data2) {
 			t.Error("duplicate error was not suppressed")
@@ -299,8 +309,12 @@ func TestAppendReport(t *testing.T) {
 		f := filepath.Join(t.TempDir(), "report.txt")
 		e1 := []DedupError{{Size: 1024, Mode: "reflink", Err: "error A", SrcPath: "/a/x.txt", DstPath: "/a/y.txt"}}
 		e2 := []DedupError{{Size: 2048, Mode: "hardlink", Err: "error B", SrcPath: "/b/x.txt", DstPath: "/b/y.txt"}}
-		appendReport(f, e1, "0.0.8")
-		appendReport(f, e2, "0.0.8")
+		if err := appendReport(f, e1, "0.0.8"); err != nil {
+			t.Fatal(err)
+		}
+		if err := appendReport(f, e2, "0.0.8"); err != nil {
+			t.Fatal(err)
+		}
 		data, _ := os.ReadFile(f)
 		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 		nonComment := 0
@@ -330,7 +344,9 @@ func TestAppendReport(t *testing.T) {
 			Err:     "open /secret/data.txt: permission denied",
 			SrcPath: "/src/a.txt", DstPath: "/dst/b.txt",
 		}}
-		appendReport(f, errors, "test")
+		if err := appendReport(f, errors, "test"); err != nil {
+			t.Fatal(err)
+		}
 		data, _ := os.ReadFile(f)
 		if strings.Contains(string(data), "/secret/data.txt") {
 			t.Error("raw path leaked into report")

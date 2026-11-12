@@ -11,9 +11,14 @@ GPG_KEY="B2BE8C2EBFB7AAC6572E933C779CD5498B743A1B"
 PPA_SERIES=(jammy noble oracular plucky questing resolute)
 PPA_TARGET="phntm-ppa"
 
-# Series that need a bundled Go toolchain (system Go is too old)
-BUNDLED_GO_SERIES=(jammy)
-BUNDLED_GO_VERSION="1.22.12"
+# Which PPA series build with which Go toolchain:
+#  - jammy, noble, resolute use the system Go (golang-1.26-go from the
+#    universe updates pocket) via the source package's Build-Depends
+#    (golang-1.26-go >= 1.26~).
+#  - oracular, plucky, questing are end-of-life series with a frozen
+#    archive and no Go 1.26 package — they bundle their own Go toolchain.
+BUNDLED_GO_SERIES=(oracular plucky questing)
+BUNDLED_GO_VERSION="1.26.8"
 BUNDLED_GO_URL="https://go.dev/dl/go${BUNDLED_GO_VERSION}.linux-amd64.tar.gz"
 
 # Ensure fpm is available
@@ -166,7 +171,7 @@ for series in "${PPA_SERIES[@]}"; do
     mkdir -p _go
     tar -xzf "${RELEASE_DIR}/${GO_TARBALL}" -C _go --strip-components=1
 
-    # Use modified debian/control without golang-go dependency
+    # Use modified debian/control without the golang-1.26-go dependency
     cat > debian/control <<CTRL
 Source: ${NAME}
 Section: utils

@@ -8,21 +8,20 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
 	"time"
-)
 
-const btrfsSuperMagic uint32 = 0x9123683E
+	"golang.org/x/sys/unix"
+)
 
 // isBtrfs checks whether the filesystem at path is btrfs.
 func isBtrfs(path string) bool {
-	var stat syscall.Statfs_t
-	if err := syscall.Statfs(path, &stat); err != nil {
+	var stat unix.Statfs_t
+	if err := unix.Statfs(path, &stat); err != nil {
 		return false
 	}
 	// Compare as uint32 — Statfs_t.Type is int32 on 32-bit architectures
 	// and the magic value exceeds MaxInt32.
-	return uint32(stat.Type) == btrfsSuperMagic
+	return uint32(stat.Type) == unix.BTRFS_SUPER_MAGIC
 }
 
 // runScrub starts a btrfs scrub and polls status until completion.
@@ -54,7 +53,7 @@ func runScrub(path string) error {
 
 		if done {
 			// Display final scrub stats.
-			for _, line := range strings.Split(status, "\n") {
+			for line := range strings.SplitSeq(status, "\n") {
 				line = strings.TrimSpace(line)
 				if line != "" && !strings.HasPrefix(line, "UUID:") && !strings.HasPrefix(line, "Scrub started:") {
 					finishLine(fmt.Sprintf("  %s", line))
@@ -65,7 +64,7 @@ func runScrub(path string) error {
 		}
 
 		// Show progress from status output.
-		for _, line := range strings.Split(status, "\n") {
+		for line := range strings.SplitSeq(status, "\n") {
 			line = strings.TrimSpace(line)
 			if strings.Contains(line, "data_bytes_scrubbed") || strings.Contains(line, "running") {
 				printStatus(fmt.Sprintf("  Scrubbing: %s", line))

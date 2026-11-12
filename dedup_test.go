@@ -274,7 +274,9 @@ func TestProcessSizeGroupDryRun(t *testing.T) {
 func TestAddDirWrite(t *testing.T) {
 	t.Run("already writable", func(t *testing.T) {
 		dir := t.TempDir()
-		os.Chmod(dir, 0755)
+		if err := os.Chmod(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
 		restore, err := addDirWrite(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -288,8 +290,11 @@ func TestAddDirWrite(t *testing.T) {
 
 	t.Run("read-only dir", func(t *testing.T) {
 		dir := t.TempDir()
-		os.Chmod(dir, 0555)
-		defer os.Chmod(dir, 0755) // cleanup safety
+		if err := os.Chmod(dir, 0555); err != nil {
+			t.Fatal(err)
+		}
+		// Cleanup safety: without the write bit, t.TempDir's removal fails.
+		defer func() { _ = os.Chmod(dir, 0755) }()
 
 		restore, err := addDirWrite(dir)
 		if err != nil {
@@ -325,7 +330,7 @@ func TestBackupToTemp(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer os.Remove(backup)
+		defer func() { _ = os.Remove(backup) }()
 		got, _ := os.ReadFile(backup)
 		if string(got) != string(content) {
 			t.Errorf("backup content = %q, want %q", got, content)

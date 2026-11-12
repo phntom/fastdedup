@@ -57,7 +57,9 @@ func TestSendWebhook(t *testing.T) {
 			t.Errorf("Content-Type = %q, want application/json", receivedContentType)
 		}
 		var payload webhookPayload
-		json.Unmarshal([]byte(receivedBody), &payload)
+		if err := json.Unmarshal([]byte(receivedBody), &payload); err != nil {
+			t.Fatal(err)
+		}
 		if payload.Text != "hello world" {
 			t.Errorf("text = %q, want %q", payload.Text, "hello world")
 		}
@@ -118,7 +120,11 @@ func TestNotifyUpdate(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var p webhookPayload
-			json.Unmarshal(body, &p)
+			if err := json.Unmarshal(body, &p); err != nil {
+				t.Errorf("bad webhook payload: %v", err)
+				w.WriteHeader(200)
+				return
+			}
 			received = p.Text
 			w.WriteHeader(200)
 		}))
@@ -143,7 +149,11 @@ func TestNotifyUpdate(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var p webhookPayload
-			json.Unmarshal(body, &p)
+			if err := json.Unmarshal(body, &p); err != nil {
+				t.Errorf("bad webhook payload: %v", err)
+				w.WriteHeader(200)
+				return
+			}
 			received = p.Text
 			w.WriteHeader(200)
 		}))
@@ -162,7 +172,11 @@ func TestNotifyUpdate(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			var p webhookPayload
-			json.Unmarshal(body, &p)
+			if err := json.Unmarshal(body, &p); err != nil {
+				t.Errorf("bad webhook payload: %v", err)
+				w.WriteHeader(200)
+				return
+			}
 			received = p.Text
 			w.WriteHeader(200)
 		}))
@@ -184,7 +198,11 @@ func TestNotifyAlert(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		var p webhookPayload
-		json.Unmarshal(body, &p)
+		if err := json.Unmarshal(body, &p); err != nil {
+			t.Errorf("bad webhook payload: %v", err)
+			w.WriteHeader(200)
+			return
+		}
 		received = p.Text
 		w.WriteHeader(200)
 	}))

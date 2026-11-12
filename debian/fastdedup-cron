@@ -15,6 +15,7 @@ LOG_FILE="/var/log/fastdedup.log"
 
 # Load configuration
 if [ -f /etc/default/fastdedup ]; then
+    # shellcheck disable=SC1091  # optional config file, absent on build machines
     . /etc/default/fastdedup
 fi
 
@@ -55,8 +56,10 @@ for mp in $MOUNTPOINTS; do
     fi
 
     if [ -n "$LOG_FILE" ]; then
+        # shellcheck disable=SC2086  # option strings from /etc/default split intentionally
         /usr/bin/fastdedup $OPTIONS $EXTRA_OPTS $MP_OPTS "$mp" 2>>"$LOG_FILE" || true
     else
+        # shellcheck disable=SC2086  # option strings from /etc/default split intentionally
         /usr/bin/fastdedup $OPTIONS $EXTRA_OPTS $MP_OPTS "$mp" || true
     fi
 done

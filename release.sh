@@ -25,7 +25,8 @@ BUNDLED_GO_URL="https://go.dev/dl/go${BUNDLED_GO_VERSION}.linux-amd64.tar.gz"
 if ! command -v fpm &>/dev/null; then
   FPM_PATH="$HOME/.local/share/gem/ruby/$(ruby -e 'puts RUBY_VERSION.sub(/\.\d+$/,".0")')/bin/fpm"
   if [[ -x "$FPM_PATH" ]]; then
-    export PATH="$(dirname "$FPM_PATH"):$PATH"
+    _fpm_bin_dir="$(dirname "$FPM_PATH")"
+    export PATH="${_fpm_bin_dir}:${PATH}"
   else
     echo "ERROR: fpm not found. Install with: gem install --user-install fpm"
     exit 1
@@ -75,12 +76,12 @@ for arch in "${ARCHES[@]}"; do
   FPM_COMMON=(
     -s dir -n "$NAME" -v "$VERSION"
     --description "$DESC"
-    --config-files etc/default/${NAME}
-    --config-files etc/logrotate.d/${NAME}
+    --config-files "etc/default/${NAME}"
+    --config-files "etc/logrotate.d/${NAME}"
     -C "$STAGING"
   )
 
-  FPM_FILES=(usr/bin/${NAME} etc/default/${NAME} etc/logrotate.d/${NAME})
+  FPM_FILES=("usr/bin/${NAME}" "etc/default/${NAME}" "etc/logrotate.d/${NAME}")
 
   printf "  %-10s deb " "linux/$arch"
   fpm "${FPM_COMMON[@]}" -t deb -a "$DEB" -p "${RELEASE_DIR}/" "${FPM_FILES[@]}" 2>/dev/null
@@ -105,7 +106,7 @@ for variant in daily weekly; do
 
   printf "  %-10s deb " "${NAME}-${variant}"
   fpm -s dir -n "${NAME}-${variant}" -v "$VERSION" \
-    --description "$(echo "${variant^}") automatic file deduplication using reflinks" \
+    --description "${variant^} automatic file deduplication using reflinks" \
     --depends "$NAME" \
     -a all -C "$STAGING" -t deb -p "${RELEASE_DIR}/" \
     etc/cron.${variant}/${NAME} 2>/dev/null
@@ -255,7 +256,7 @@ ${NAME} (${PPA_VERSION}) ${series}; urgency=low
 CHLOG
 
   # Clean previous artifacts for this version
-  rm -f ../${NAME}_${PPA_VERSION}*
+  rm -f "../${NAME}_${PPA_VERSION}"*
 
   printf "  %-12s building..." "$series"
   if ! debuild -S -k"${GPG_KEY}" 2>/dev/null; then
@@ -322,7 +323,7 @@ done
 # ── Summary ─────────────────────────────────────────────────────────
 echo ""
 echo "==> Release ${VERSION} ready in ${RELEASE_DIR}/"
-echo "    $(ls -1 "$RELEASE_DIR" | wc -l) files"
+echo "    $(find "$RELEASE_DIR" -mindepth 1 -maxdepth 1 | wc -l) files"
 echo ""
 echo "To publish on GitHub:"
 echo "  gh release create v${VERSION} ${RELEASE_DIR}/* --title 'v${VERSION}' --notes '## v${VERSION}'"

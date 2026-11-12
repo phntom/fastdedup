@@ -61,7 +61,7 @@ sudo apt update
 sudo apt install -y fastdedup
 ```
 
-Supports Ubuntu 22.04 (jammy), 24.04 (noble), 24.10 (oracular), 25.04 (plucky), 25.10 (questing), and 26.04 (resolute).
+Supports Ubuntu 22.04 (jammy), 24.04 (noble), and 26.04 (resolute). Users on end-of-life Ubuntu releases can install the `.deb`, `.rpm`, or self-extracting artifacts from the [releases page](https://github.com/phntom/fastdedup/releases).
 
 ### Debian/Ubuntu (manual)
 
